@@ -164,6 +164,7 @@
 | 2026-08-05 | 第一阶段优先 Linux 推流到 Android 播放 | Linux 采集和 FFmpeg/SRS/ffplay 更容易形成早期验收，Android 先聚焦播放和同步难点 | `docs/architecture.md`、`docs/milestones.md` | Codex | 是 |
 | 2026-08-05 | 第一版建议 Android 软件解码视频优先使用 `ANativeWindow` 渲染 | 接入成本低，适合先验证软件解码播放；OpenGL ES 留到优化阶段 | Android 播放端 | Codex | 是 |
 | 2026-08-05 | 公共层内部时间统一使用微秒 `_us` | 降低 FFmpeg time base、RTMP ms、音频 sample clock 混用风险 | Shared / Android / Linux | Codex | 是 |
+| 2026-08-05 | 每一端必须支持单边路径验证 | 两个 AI 分别推进时不能等待另一端完成；当前端应能用本地文件、FFmpeg、ffplay、ffprobe 或简单脚本模拟对端 | Android / Linux / scripts / docs | 用户 / Codex | 否 |
 
 ## 6. Pending Changes
 
@@ -174,6 +175,7 @@
 | P-003 | Shared | 确认 FFmpeg 版本和依赖管理方式 | 保证两端 ABI 和封装/解封装行为可控 | 影响 Android FFmpeg ABI 包和 NDK 链接 | 影响 Linux dev 包或源码构建 | PROPOSED |
 | P-004 | Android | 确认 Android 第一版音频输出 API | 音频主时钟需要实际播放位置 | 影响 AAudio/AudioTrack/Oboe 选择 | 无直接影响，但影响端到端同步指标 | TODO |
 | P-005 | Linux | 确认 Linux 运行环境和 SRS 部署方式 | 采集设备、FFmpeg 依赖和 RTMP 验证依赖环境 | Android 需要稳定 RTMP URL 做拉流测试 | 影响 Milestone 1-3 | TODO |
+| P-006 | Shared | 确认是否创建最小单边验证脚本 | 用本地文件/FFmpeg/Python 模拟对端，减少跨机器等待 | Android 可独立验证播放端 | Linux 可独立验证推流端 | TODO |
 
 ## 7. Blockers
 
@@ -224,6 +226,15 @@ shared/interface-contract
 - 依赖另一端：Android AI 和 Linux AI 需要基于这些文档评审各自平台边界，公共接口确认前不得实现业务代码。
 - 未修改内容：未创建 `.cpp`、`.h`、Kotlin/Java、Gradle、CMake、Make、shell 业务实现。
 - 下一步建议：用户先评审并确认架构；确认后优先执行 Milestone 1，本地文件推流到 SRS 并用 ffplay 验证。
+
+### 2026-08-05 Codex Single-Side Validation Update
+
+- 完成内容：补充单边路径验证要求，要求 Android 和 Linux 任一端都能在另一端未完成时用本地文件、FFmpeg、ffplay、ffprobe 或简单脚本模拟对端。
+- 修改文件：`AGENTS.md`、`CLAUDE.md`、`docs/architecture.md`、`docs/milestones.md`、`docs/AI_COLLABORATION.md`。
+- 验证结果：仅文档修改，未运行构建或测试。
+- 依赖另一端：后续 Android AI / Linux AI 需要在各自里程碑中提供不依赖另一端的验证命令。
+- 未修改内容：未创建测试脚本、业务代码或构建文件。
+- 下一步建议：架构确认后优先创建最小 FFmpeg 单边验证命令或脚本文档。
 
 ## 10. Update Checklist
 

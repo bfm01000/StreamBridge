@@ -2,6 +2,18 @@
 
 本文档把 StreamBridge 拆成可独立运行、独立验证的小里程碑。当前仍处于架构设计阶段，未得到用户确认前不得开始实现。
 
+## Single-Side Validation Rule
+
+每个端侧里程碑都必须提供单边验证方式。即使另一端尚未完成，也要能用本地文件、FFmpeg、ffplay、ffprobe 或简单 Python 脚本模拟对端。
+
+原则：
+
+- Android 播放端可以用 FFmpeg 从本地文件推流到 SRS，模拟 Linux 推流端。
+- Linux 推流端可以用 `ffplay` 或 `ffprobe` 模拟 Android 拉流端。
+- Linux 采集端可以先不用摄像头和麦克风，使用本地文件或 FFmpeg lavfi 测试源验证编码、封装、推流和时间戳。
+- 优先 FFmpeg 命令，必要时才写 Python 脚本。
+- 单边验证脚本只用于测试和模拟，不替代正式业务实现。
+
 ## Milestone 1: Local File To SRS And ffplay
 
 范围：
@@ -31,6 +43,7 @@
 
 - 推流后用 `ffplay rtmp://...` 拉流。
 - 用 `ffprobe` 检查 codec、time base、fps、sample rate。
+- 该里程碑本身就是双方共同依赖的单边验证基线。
 
 风险：
 
@@ -73,6 +86,8 @@
 
 - 物理机或虚拟机设备直通测试。
 - 拔插设备或设备不可用时返回清晰错误。
+- 单边验证：Android 端未完成时，使用 `ffplay` 拉取 SRS 中的视频-only 流。
+- 摄像头不可用时，先用 FFmpeg `testsrc` 或本地文件模拟视频输入验证推流路径。
 
 风险：
 
@@ -117,6 +132,8 @@
 - `ffplay` 主观播放检查。
 - 日志检查 PTS 连续性、队列水位、编码耗时。
 - 用 `ffprobe` 检查流参数。
+- 单边验证：Android 端未完成时，使用 `ffplay` 验证播放，用 `ffprobe` 验证 H.264/AAC、time base 和时长。
+- 摄像头或麦克风不可用时，使用本地文件、`testsrc` 和 `sine` 模拟音视频输入。
 
 风险：
 
@@ -160,6 +177,8 @@
 - 真机或模拟器拉取 Milestone 3 的 Linux 流。
 - 旋转屏幕、后台前台切换、销毁 Surface。
 - 停止后重复启动。
+- 单边验证：Linux 推流端未完成时，用 FFmpeg 从本地媒体文件推流到 SRS，Android 只负责拉流播放。
+- 输入文件优先使用固定短样本和一个 5-10 分钟长样本，便于复现首帧、重连和稳定性问题。
 
 风险：
 
@@ -200,6 +219,7 @@
 - 正常网络 30 分钟播放。
 - 人为增加网络抖动或暂停推流。
 - Surface 重建时观察音频不中断或可恢复。
+- 单边验证：使用 FFmpeg 本地文件循环推流，保证输入 PTS 稳定，再验证 Android `audio_clock_us`、`video_pts_us`、`av_diff_us`。
 
 风险：
 
@@ -244,6 +264,7 @@
 - 断开 Linux 推流再恢复。
 - Android 反复 start/stop。
 - 记录内存、线程数、队列水位、A/V diff。
+- 单边验证：Android 稳定性可使用 FFmpeg 本地文件循环推流；Linux 稳定性可使用 `ffplay` 长时间拉流。
 
 风险：
 
@@ -286,6 +307,7 @@
 - Android 推流，Linux 本地播放。
 - ffplay 作为中间对照。
 - 长时间运行和重连验证。
+- 单边验证：Linux 播放端未完成时，用 `ffplay` 验证 Android 推流；Android 推流端未完成时，用 FFmpeg 本地文件推流模拟 Android 发布端，先验证 Linux 拉流播放。
 
 风险：
 

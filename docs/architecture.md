@@ -489,7 +489,45 @@ ts_us module session_id thread state event stream pts_us dts_us queue_ms queue_s
 - 集成测试：本地文件推流到 SRS、Linux 设备采集、Android 拉流播放。
 - 真机测试：Surface 重建、Activity 旋转/后台、音频设备行为、30 分钟稳定性。
 
-## 12. Open Decisions
+## 12. Single-Side Validation
+
+每一端都必须能在另一端尚未完成时独立验证当前链路。优先使用本地文件、FFmpeg、ffplay、ffprobe 或非常薄的 Python 脚本，怎样简单怎样来。
+
+Android 播放端单边验证：
+
+```text
+local media file -> ffmpeg publish -> SRS -> Android subscriber/playback
+```
+
+目的：
+
+- 不等待 Linux 推流端完成，也能验证 Android RTMP 拉流、解封装、解码、音频输出、视频渲染和同步。
+- 输入优先用本地 mp4/flv 文件，不依赖摄像头或麦克风。
+- 推流端可以是 FFmpeg 命令；只有 FFmpeg 命令难以表达测试场景时，才使用 Python 脚本。
+
+Linux 推流端单边验证：
+
+```text
+Linux publisher -> SRS -> ffplay / ffprobe
+```
+
+目的：
+
+- 不等待 Android 播放端完成，也能验证 Linux 编码、封装、推流、时间戳和重连。
+- 采集链路尚未稳定时，可先使用本地文件或 FFmpeg lavfi 测试源模拟摄像头和麦克风。
+- 拉流端优先用 `ffplay` 做播放验证，用 `ffprobe` 做格式和时间基检查。
+
+建议模拟输入：
+
+```text
+本地文件：sample.mp4
+视频测试源：testsrc / smptebars
+音频测试源：sine
+```
+
+后续如果创建脚本，脚本只能放在 `scripts/` 或测试目录中作为验证工具，不得替代正式业务实现；脚本必须写明输入、输出、依赖、运行命令和预期结果。
+
+## 13. Open Decisions
 
 需要用户后续确认：
 
@@ -499,8 +537,9 @@ ts_us module session_id thread state event stream pts_us dts_us queue_ms queue_s
 4. Linux 开发环境是物理机、WSL、虚拟机还是远程 Linux。
 5. FFmpeg 依赖采用系统包、源码固定版本还是预编译包。
 6. SRS 采用本机安装、Docker 还是远程服务。
+7. 是否允许在 `scripts/` 中保留最小 FFmpeg/Python 模拟脚本作为端侧验证工具。
 
-## 13. Recommended First Milestone
+## 14. Recommended First Milestone
 
 架构确认后，建议第一个实现里程碑是：
 
