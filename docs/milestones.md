@@ -1,0 +1,363 @@
+# Milestones
+
+本文档把 StreamBridge 拆成可独立运行、独立验证的小里程碑。当前仍处于架构设计阶段，未得到用户确认前不得开始实现。
+
+## Milestone 1: Local File To SRS And ffplay
+
+范围：
+
+- 使用本地媒体文件作为输入。
+- 通过 FFmpeg 推送 H.264/AAC FLV/RTMP 到 SRS。
+- 使用 `ffplay` 拉流验证。
+- 记录最小运行命令、SRS URL、关键日志和失败排查。
+
+输入：
+
+- 本地 mp4/flv 测试文件。
+- SRS 服务地址。
+
+输出：
+
+- 可被 `ffplay` 播放的 RTMP 流。
+- 初始 `docs/build-and-run.md` 中的运行说明。
+
+完成标准：
+
+- `ffplay` 能稳定播放至少 5 分钟。
+- 日志能看到 RTMP 连接、音视频编码格式、SPS/PPS、AudioSpecificConfig。
+- 明确 FFmpeg 命令和 SRS 配置。
+
+测试方法：
+
+- 推流后用 `ffplay rtmp://...` 拉流。
+- 用 `ffprobe` 检查 codec、time base、fps、sample rate。
+
+风险：
+
+- SRS 未安装或端口占用。
+- 输入文件格式与目标格式不一致。
+- FFmpeg 缺少 libx264 或 AAC encoder。
+
+明确不做：
+
+- 不接入真实摄像头或麦克风。
+- 不写 Android 代码。
+- 不建立完整 C++ 工程。
+
+## Milestone 2: Linux Camera Video-Only Publish
+
+范围：
+
+- Linux 采集摄像头视频。
+- 软件编码 H.264。
+- 推送视频-only RTMP 到 SRS。
+- 用 `ffplay` 验证。
+
+输入：
+
+- Linux 摄像头设备。
+- 视频采集配置：720p、30 fps，允许降级。
+
+输出：
+
+- RTMP 视频流。
+- 设备能力探测日志。
+
+完成标准：
+
+- 不硬编码设备能力，能打印可用分辨率和像素格式。
+- 视频流稳定播放 10 分钟。
+- 日志记录 capture pts、encode pts、rtmp timestamp。
+
+测试方法：
+
+- 物理机或虚拟机设备直通测试。
+- 拔插设备或设备不可用时返回清晰错误。
+
+风险：
+
+- 虚拟机 USB 摄像头直通抖动。
+- V4L2 pixel format 需要转换。
+- 摄像头帧率不稳定。
+
+明确不做：
+
+- 不采集音频。
+- 不实现 Android 播放。
+- 不实现原生 V4L2 和 FFmpeg avdevice 两套完整采集，第一版择一。
+
+## Milestone 3: Linux Audio/Video Publish
+
+范围：
+
+- Linux 同时采集摄像头和麦克风。
+- 视频编码 H.264，音频编码 AAC-LC。
+- 推送音视频 RTMP 到 SRS。
+- 建立采集端时间戳日志。
+
+输入：
+
+- Linux 摄像头。
+- Linux 麦克风。
+- 720p30、48 kHz 默认配置，允许按设备能力降级。
+
+输出：
+
+- RTMP 音视频流。
+- `capture_audio_us`、`capture_video_us`、`packet_pts_us` 日志。
+
+完成标准：
+
+- `ffplay` 能播放音视频至少 10 分钟。
+- 音频无明显爆音或持续 underrun。
+- 视频和音频 PTS 单调，首帧归一化可解释。
+
+测试方法：
+
+- `ffplay` 主观播放检查。
+- 日志检查 PTS 连续性、队列水位、编码耗时。
+- 用 `ffprobe` 检查流参数。
+
+风险：
+
+- 摄像头与麦克风硬件时钟漂移。
+- ALSA 设备选择和采样率不匹配。
+- AAC 编码器格式转换复杂。
+
+明确不做：
+
+- 不实现 Android 端解码播放。
+- 不做硬件编码。
+
+## Milestone 4: Android C++ RTMP Subscribe And Software Playback
+
+范围：
+
+- Android app 通过 JNI 启停 native playback session。
+- C++ 使用 FFmpeg 拉取 RTMP/FLV。
+- 软件解码 H.264/AAC。
+- 音频输出和视频渲染跑通。
+
+输入：
+
+- SRS RTMP URL。
+- Android Surface。
+
+输出：
+
+- Android 上可播放的音视频。
+- JNI 生命周期和 native session 日志。
+
+完成标准：
+
+- 拉流、解封装、解码、音频输出、视频渲染均在 C++ 主链路完成。
+- JNI 不逐帧传递媒体数据。
+- Surface 销毁和重建不会崩溃。
+- 播放 10 分钟无明显线程泄漏。
+
+测试方法：
+
+- 真机或模拟器拉取 Milestone 3 的 Linux 流。
+- 旋转屏幕、后台前台切换、销毁 Surface。
+- 停止后重复启动。
+
+风险：
+
+- FFmpeg Android ABI 包复杂。
+- ANativeWindow 像素格式转换成本较高。
+- AAudio 设备延迟获取不准确。
+
+明确不做：
+
+- 不实现 MediaCodec。
+- 不实现 Android 采集推流。
+- 不做复杂 UI。
+
+## Milestone 5: Android Audio Master Clock And A/V Sync
+
+范围：
+
+- 实现或完善音频主时钟。
+- 视频根据 `av_diff_us` 等待、立即渲染或丢帧。
+- 记录同步指标。
+
+输入：
+
+- Milestone 3 的音视频 RTMP 流。
+
+输出：
+
+- 可观测的 `audio_clock_us`、`video_pts_us`、`av_diff_us`、drop/late 统计。
+
+完成标准：
+
+- A/V 差值在正常网络下大多数时间保持在目标阈值内。
+- 视频严重落后时能丢帧追赶。
+- 无音频或音频中断时有明确降级策略。
+
+测试方法：
+
+- 正常网络 30 分钟播放。
+- 人为增加网络抖动或暂停推流。
+- Surface 重建时观察音频不中断或可恢复。
+
+风险：
+
+- 音频实际播放位置只能估算。
+- 手机不同厂商音频栈行为差异。
+- 解码耗时波动导致视频堆积。
+
+明确不做：
+
+- 不做音频重采样补偿。
+- 不做自适应码率。
+
+## Milestone 6: Reconnect, Resource Release And 30-Minute Stability
+
+范围：
+
+- 网络断开重连。
+- stop/release 幂等。
+- 队列 flush、abort、shutdown。
+- 30 分钟稳定性测试。
+
+输入：
+
+- Linux 推流端。
+- Android 播放端。
+- 可控网络/SRS 中断场景。
+
+输出：
+
+- 稳定性测试报告。
+- 资源释放日志。
+
+完成标准：
+
+- 主动 stop 后没有线程泄漏。
+- SRS 临时不可达后能进入 Reconnecting 或 Error，状态清晰。
+- 连续 30 分钟内队列水位、内存、延迟不持续增长。
+
+测试方法：
+
+- 停止 SRS 再恢复。
+- 断开 Linux 推流再恢复。
+- Android 反复 start/stop。
+- 记录内存、线程数、队列水位、A/V diff。
+
+风险：
+
+- FFmpeg 阻塞调用未正确中断。
+- 重连后 sequence header 或首帧归一化错误。
+- Activity 生命周期触发资源双重释放。
+
+明确不做：
+
+- 不做多服务器故障转移。
+- 不做后台长期保活策略。
+
+## Milestone 7: Android Publish To Linux Playback
+
+范围：
+
+- Android 采集摄像头和麦克风。
+- Android 编码并推流到 SRS。
+- Linux 拉流、解码、同步并播放。
+- 复用 common 抽象。
+
+输入：
+
+- Android Camera 和麦克风。
+- SRS。
+- Linux 播放环境。
+
+输出：
+
+- Android -> SRS -> Linux 的端到端音视频链路。
+
+完成标准：
+
+- 不复制一套完全不同的 publish/playback 抽象。
+- Android 采集时间戳与音频时间戳可解释。
+- Linux 播放端有音频主时钟和视频同步。
+
+测试方法：
+
+- Android 推流，Linux 本地播放。
+- ffplay 作为中间对照。
+- 长时间运行和重连验证。
+
+风险：
+
+- Android Camera/AudioRecord 时间戳映射复杂。
+- MediaCodec 或软件编码依赖选择。
+- Linux 播放端输出 API 选择。
+
+明确不做：
+
+- 不在第一阶段提前实现。
+- 不实现硬件编码的完整优化。
+
+## Milestone 8: Hardware Codec Extensions
+
+范围：
+
+- Android MediaCodec 编解码适配。
+- Linux VAAPI、NVENC、V4L2 M2M 等能力评估和适配。
+- 能力查询和软件回退。
+
+输入：
+
+- 已稳定的软件编解码链路。
+- 目标硬件和驱动环境。
+
+输出：
+
+- 可配置选择硬件或软件 codec。
+- codec fallback 日志和测试结果。
+
+完成标准：
+
+- 上层 Session 不依赖具体硬件 API。
+- 硬件不可用时可回退软件实现。
+- 能力不匹配时错误清晰。
+
+测试方法：
+
+- Android 真机 MediaCodec 解码。
+- Linux 目标硬件上验证 VAAPI/NVENC/V4L2 M2M。
+- 对比 CPU 占用、延迟、A/V sync。
+
+风险：
+
+- 硬件编码输出格式、颜色格式和 buffer ownership 差异大。
+- Android Surface 模式和 ByteBuffer 模式生命周期复杂。
+- Linux 驱动和 FFmpeg 编译选项差异。
+
+明确不做：
+
+- 不做零拷贝全链路。
+- 不追求所有硬件平台一次支持。
+
+## Suggested Execution Order
+
+1. 完成并确认架构文档。
+2. 建立 `shared/interface-contract`，确认 common 接口。
+3. 执行 Milestone 1。
+4. 执行 Milestone 2 和 3。
+5. 执行 Milestone 4 和 5。
+6. 执行 Milestone 6。
+7. 再进入反向链路和硬件扩展。
+
+## Acceptance Reporting Template
+
+每个里程碑结束时汇报：
+
+1. 范围是否完成；
+2. 修改文件；
+3. 构建命令和结果；
+4. 运行命令和结果；
+5. 日志和指标摘要；
+6. 已知风险；
+7. 下一步建议；
+8. 是否需要用户确认。

@@ -21,6 +21,7 @@
 - 澄清会阻塞架构设计的关键问题；
 - 创建或更新 `docs/architecture.md`；
 - 按第 10 节创建必要的配套设计文档；
+- 创建或更新 `docs/AI_COLLABORATION.md`；
 - 给出目录规划、接口草案、数据流、线程模型、时间戳方案、里程碑和风险。
 
 首次工作禁止：
@@ -40,6 +41,57 @@
 
 只有用户明确回复“架构确认，可以开始实现”或表达同等含义后，才能编写代码。
 
+## 2.1 双 AI 跨机器协作
+
+本项目可能由两个 AI 分别在两台机器上协作推进：
+
+1. Android 端 AI：主要负责 Android 工程、Gradle、JNI/NDK、Android C++ 播放链路、Android 平台 API 边界和真机验证。
+2. Linux 端 AI：主要负责 Linux 工程、CMake/Make、Linux 采集推流链路、FFmpeg/Linux 平台 API 边界和 Linux 运行验证。
+
+两个 AI 可以分别分析和实现各自平台，但必须有序协作，不能各自随意修改公共部分。
+
+`docs/AI_COLLABORATION.md` 是两个 AI 的唯一协作事实来源。任何跨端假设如果没有写入该文档，就视为不存在。
+
+该文档至少维护：
+
+- 当前阶段状态：TODO、IN_PROGRESS、BLOCKED、DONE；
+- Android AI 负责范围、Linux AI 负责范围、公共代码范围；
+- 禁止各自修改的范围；
+- 公共接口约定：数据结构、协议字段、JNI/native bridge、ABI、字节序、字符编码、错误码、版本号；
+- 构建约定：Android Gradle/NDK/CMake/ABI/产物路径，Linux 编译器/CMake 或 Make/FFmpeg 依赖/动态库路径/产物路径；
+- Decision Log：日期、决策、原因、影响范围、决策人、是否需要另一端确认；
+- Pending Changes：待确认的公共接口或构建约定变更；
+- Blockers：阻塞项、阻塞端、需要谁处理、需要的信息、临时绕过方案、当前状态；
+- 每轮工作结束记录：改了什么、验证了什么、依赖另一端什么、没有改什么、下一步建议。
+
+公共部分包括但不限于 `common/`、跨端协议、核心数据结构、公共头文件、接口草案、构建约定和跨端文档。公共部分必须先记录、再确认、再修改：
+
+1. 在 `docs/AI_COLLABORATION.md` 的 Pending Changes 中提出变更；
+2. 说明变更原因、影响 Android 哪些部分、影响 Linux 哪些部分；
+3. 等另一端确认，或至少明确记录“待另一端确认”；
+4. 再修改公共代码或公共文档；
+5. 修改后更新 Decision Log 和对应 Changelog。
+
+两台机器协作时，代码同步必须通过 Git 完成，不要靠手动复制文件。
+
+建议后续分支模型：
+
+- `shared/interface-contract`：公共接口、协议、跨端文档和共享构建约定；
+- `android/build-integration`：Android 端工程和平台实现；
+- `linux/build-integration`：Linux 端工程和平台实现；
+- `integration/e2e-test`：跨端联调和端到端验证。
+
+推荐合并顺序：
+
+```text
+shared/interface-contract
+→ android/build-integration
+→ linux/build-integration
+→ integration/e2e-test
+```
+
+如果某端发现必须修改另一端负责范围，先写入 `docs/AI_COLLABORATION.md` 的 Blockers 或 Pending Changes，不要直接改。
+
 ## 3. 仓库结构
 
 仓库根目录至少采用以下结构，最终以确认后的架构文档为准：
@@ -54,6 +106,7 @@ project-root/
 │   ├── timestamp-and-av-sync.md
 │   ├── build-and-run.md
 │   ├── milestones.md
+│   ├── AI_COLLABORATION.md
 │   └── decisions/
 ├── common/
 │   ├── include/

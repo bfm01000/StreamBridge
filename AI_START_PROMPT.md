@@ -26,8 +26,88 @@ RTMP 服务端计划使用 SRS。第一版允许使用 FFmpeg 完成 RTMP/FLV �
 - `docs/architecture.md`
 - `docs/timestamp-and-av-sync.md`
 - `docs/milestones.md`
+- `docs/AI_COLLABORATION.md`
 
 如确有必要，可以补充少量设计文档，但不要创建 `.cpp`、`.h`、Kotlin/Java 业务代码、Gradle 工程、CMake 实现或占位模块。
+
+## 双 AI 协作方式
+
+本项目将由两个 AI 分别在两台机器上协作推进：
+
+1. Android 端 AI：主要负责 Android 工程、Gradle、JNI/NDK、Android C++ 播放链路、Android 平台 API 边界和真机验证。
+2. Linux 端 AI：主要负责 Linux 工程、CMake/Make、Linux 采集推流链路、FFmpeg/Linux 平台 API 边界和 Linux 运行验证。
+
+两个 AI 可以分别分析和实现各自平台，但必须有序协作，不能各自随意修改公共部分。
+
+### 单一事实来源
+
+`docs/AI_COLLABORATION.md` 是两个 AI 的唯一协作事实来源。任何跨端假设如果没有写入该文档，就视为不存在。
+
+本轮创建该文档时，至少包含：
+
+- 当前阶段状态：TODO、IN_PROGRESS、BLOCKED、DONE；
+- Android AI 负责范围、Linux AI 负责范围、公共代码范围；
+- 禁止各自修改的范围；
+- 公共接口约定：数据结构、协议字段、JNI/native bridge、ABI、字节序、字符编码、错误码、版本号；
+- 构建约定：Android Gradle/NDK/CMake/ABI/产物路径，Linux 编译器/CMake 或 Make/FFmpeg 依赖/动态库路径/产物路径；
+- Decision Log：日期、决策、原因、影响范围、决策人、是否需要另一端确认；
+- Pending Changes：待确认的公共接口或构建约定变更；
+- Blockers：阻塞项、阻塞端、需要谁处理、需要的信息、临时绕过方案、当前状态；
+- 每轮工作结束记录：改了什么、验证了什么、依赖另一端什么、没有改什么、下一步建议。
+
+### 公共部分修改规则
+
+公共部分包括但不限于 `common/`、跨端协议、核心数据结构、公共头文件、接口草案、构建约定和跨端文档。
+
+公共部分必须先设计和记录，再实现。修改顺序为：
+
+1. 在 `docs/AI_COLLABORATION.md` 的 Pending Changes 中提出变更；
+2. 说明变更原因、影响 Android 哪些部分、影响 Linux 哪些部分；
+3. 等另一端确认，或至少明确记录“待另一端确认”；
+4. 再修改公共代码或公共文档；
+5. 修改后更新 Decision Log 和对应 Changelog。
+
+本轮只做架构设计，不创建业务代码；因此公共部分只允许形成文档级接口草案和协作约定。
+
+### Git 协作建议
+
+两台机器协作时，代码同步必须通过 Git 完成，不要靠手动复制文件。
+
+建议后续分支模型：
+
+- `shared/interface-contract`：公共接口、协议、跨端文档和共享构建约定；
+- `android/build-integration`：Android 端工程和平台实现；
+- `linux/build-integration`：Linux 端工程和平台实现；
+- `integration/e2e-test`：跨端联调和端到端验证。
+
+推荐合并顺序：
+
+```text
+shared/interface-contract
+→ android/build-integration
+→ linux/build-integration
+→ integration/e2e-test
+```
+
+如果 Android 端和 Linux 端都需要同一个公共变更，优先在 `shared/interface-contract` 中完成并同步，再分别继续平台端工作。
+
+### 每个 AI 的边界
+
+Android 端 AI 不应随意修改：
+
+- Linux 专属构建脚本；
+- Linux main 程序；
+- Linux systemd、shell 部署文件；
+- 未经协作文档确认的公共协议、公共头文件和核心数据结构。
+
+Linux 端 AI 不应随意修改：
+
+- Android Gradle 配置；
+- Android app 代码；
+- Android JNI 调用层；
+- 未经协作文档确认的公共协议、公共头文件和核心数据结构。
+
+如果某端发现必须修改另一端负责范围，先写入 `docs/AI_COLLABORATION.md` 的 Blockers 或 Pending Changes，不要直接改。
 
 ## 架构文档必须回答的问题
 
