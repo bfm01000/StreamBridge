@@ -1,0 +1,66 @@
+#pragma once
+// 传输接口（RTMP 发布/订阅）
+
+#include <utility>
+
+#include "streambridge/media_errors.h"
+#include "streambridge/media_types.h"
+#include "streambridge/stop_token.h"
+
+namespace streambridge {
+
+struct PublishConfig {
+    std::string url;                  // rtmp://127.0.0.1:1935/live/stream0
+    std::string format = "flv";
+    int connect_timeout_ms = 10'000;
+    int write_timeout_ms = 5'000;
+};
+
+struct SubscribeConfig {
+    std::string url;
+    int connect_timeout_ms = 10'000;
+    int read_timeout_ms = 5'000;
+    int64_t buffer_duration_us = 2'000'000;
+};
+
+class IMediaPublisher {
+public:
+    virtual ~IMediaPublisher() = default;
+
+    virtual Result<void> open(const PublishConfig& config) = 0;
+    virtual Result<void> write_header(const StreamInfo& video_stream,
+                                      const StreamInfo& audio_stream) = 0;
+    virtual Result<void> write_packet(const MediaPacket& packet) = 0;
+    virtual void close() = 0;
+    virtual void interrupt() = 0;
+
+    virtual bool is_open() const = 0;
+
+    struct Stats {
+        int64_t bytes_written = 0;
+        int64_t packets_written = 0;
+    };
+    virtual Stats stats() const = 0;
+};
+
+class IMediaSubscriber {
+public:
+    virtual ~IMediaSubscriber() = default;
+
+    virtual Result<void> open(const SubscribeConfig& config) = 0;
+    virtual Result<std::pair<StreamInfo, StreamInfo>>
+        read_header(StopToken stop) = 0;
+    virtual Result<MediaPacket> read_packet(StopToken stop) = 0;
+    virtual void close() = 0;
+    virtual void interrupt() = 0;
+
+    virtual bool is_open() const = 0;
+
+    struct Stats {
+        int64_t bytes_read = 0;
+        int64_t packets_read = 0;
+    };
+    virtual Stats stats() const = 0;
+};
+
+}  // namespace streambridge

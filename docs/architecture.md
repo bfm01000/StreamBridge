@@ -2,6 +2,13 @@
 
 本文档定义 StreamBridge 第一阶段的整体架构。当前仓库尚无 `common/`、`linux/`、`android/` 源码目录和构建文件，因此本文中的目录和接口均为架构规划，不代表已经实现。
 
+> 配套文档：
+> - `docs/common-interfaces.md` — 公共层完整接口体系（类型、采集、编解码、传输、输出、时钟、同步、队列、会话、工厂、日志）
+> - `docs/linux-architecture.md` — Linux 端详细架构（推流实现、播放端设计、线程模型、错误处理、构建、测试）
+> - `docs/timestamp-and-av-sync.md` — 时间戳与音视频同步
+> - `docs/milestones.md` — 里程碑拆分
+> - `docs/AI_COLLABORATION.md` — 双 AI 协作
+
 ## 1. Scope
 
 ### Current Version Goals
