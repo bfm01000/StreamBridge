@@ -2,6 +2,18 @@
 
 本文档适用于所有进入本仓库的 AI 代理。`AGENTS.md` 与 `CLAUDE.md` 必须保持内容完全一致；如需修改规则，必须同时更新两个文件。
 
+## Autonomous Execution Rules
+
+- Execute tasks autonomously from start to finish.
+- Do not ask for confirmation before modifying files, running commands, installing dependencies, building, testing, or fixing errors.
+- Do not stop after completing only part of the task.
+- If implementation details are ambiguous, make a reasonable engineering decision and continue.
+- If an error occurs, diagnose it, attempt to fix it, and continue.
+- After making changes, build and test the project when applicable.
+- Continue iterating until the requested task is fully completed or there is a genuine external blocker that cannot be resolved automatically.
+- Only ask the user a question when progress is impossible without information that cannot be inferred from the repository, documentation, or environment.
+- At the end, provide a concise summary of changes, tests performed, and any remaining issues.
+
 ## 1. 项目目标
 
 StreamBridge 是一个 Linux + Android RTMP 音视频学习项目，用于实践 Linux、FFmpeg、RTMP、Android Native 音视频开发与音视频同步。

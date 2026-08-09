@@ -530,4 +530,11 @@ rtmp://<host-lan-ip>/live/stream
 - `Native Test`：生成公共 `VideoFrame`，通过 C++ `NativeVideoRenderer` 渲染到 `ANativeWindow`，验证 Java/JNI/native/common frame/Surface 链路。
 - `Start`：使用 Java `MediaPlayer` 播放输入 URL，验证 UI、Surface 和系统播放后端。
 
+Android native 层当前已具备这些播放基础模块：
+
+- `NativeVideoRenderer`：公共 `VideoFrame` 到 `ANativeWindow`。
+- `PlaybackClock`：音频主时钟，无音频时使用 monotonic wall clock 回退。
+- `AVSyncController`：按 `av_diff_us` 决定 Wait/Render/RenderLate/Drop。
+- `NativeAudioOutput`：AAudio 输出 interleaved S16，并读取或估算实际播放帧位置。
+
 注意：`MediaPlayer` 对 RTMP 的支持取决于设备系统能力。如果设备系统不支持 RTMP，可先用 HTTP MP4/HLS URL 验证 Android 播放 UI、Surface 和音频输出；稳定 RTMP 播放仍需要后续接入 Android FFmpeg ABI。

@@ -48,9 +48,15 @@ streambridge::Result<void> FFmpegSubscriber::open(const std::string& url) {
     // 打开输入（RTMP URL）
     AVFormatContext* ctx = nullptr;
     AVDictionary* opts = nullptr;
-    // 设置超时和缓冲区选项，防止阻塞过久
+    // RTMP 选项：强制 TCP 传输（避免 Android 上 HTTP tunnel 绑本地地址失败）
+    av_dict_set(&opts, "rtmp_transport", "tcp", 0);
     av_dict_set(&opts, "rtmp_live", "live", 0);
-    av_dict_set(&opts, "timeout", "10000000", 0);  // 10s 超时（微秒）
+    // 网络超时
+    av_dict_set(&opts, "timeout", "10000000", 0);       // 10s 超时（微秒）
+    av_dict_set(&opts, "connect_timeout", "5000000", 0); // 5s 连接超时
+    av_dict_set(&opts, "rw_timeout", "10000000", 0);     // 读写超时
+    // 缓冲区（Android 网络栈建议小一点）
+    av_dict_set(&opts, "buffer_size", "524288", 0);      // 512KB
 
     int ret = avformat_open_input(&ctx, url.c_str(), nullptr, &opts);
     av_dict_free(&opts);

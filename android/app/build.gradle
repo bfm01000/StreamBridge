@@ -4,6 +4,12 @@ android {
     namespace "com.streambridge.android"
     compileSdk 37
 
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ['../native/libs']
+        }
+    }
+
     defaultConfig {
         applicationId "com.streambridge.android"
         minSdk 26
