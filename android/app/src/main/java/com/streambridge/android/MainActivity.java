@@ -20,6 +20,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private Button startButton;
     private Button stopButton;
     private Button testPatternButton;
+    private Button tcpTestButton;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -41,28 +42,42 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         root.addView(urlInput, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        LinearLayout buttons = new LinearLayout(this);
-        buttons.setOrientation(LinearLayout.HORIZONTAL);
+        // 第一行按钮：播放 / 停止 / HTTP备选
+        LinearLayout row1 = new LinearLayout(this);
+        row1.setOrientation(LinearLayout.HORIZONTAL);
 
         startButton = new Button(this);
         startButton.setText("RTMP播放");
         startButton.setOnClickListener(view -> startPlayback());
-        buttons.addView(startButton, new LinearLayout.LayoutParams(
+        row1.addView(startButton, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
 
         stopButton = new Button(this);
         stopButton.setText("停止");
         stopButton.setOnClickListener(view -> stopPlayback());
-        buttons.addView(stopButton, new LinearLayout.LayoutParams(
+        row1.addView(stopButton, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
 
         testPatternButton = new Button(this);
         testPatternButton.setText("HTTP备选");
         testPatternButton.setOnClickListener(view -> renderNativeTestPattern());
-        buttons.addView(testPatternButton, new LinearLayout.LayoutParams(
+        row1.addView(testPatternButton, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
 
-        root.addView(buttons, new LinearLayout.LayoutParams(
+        root.addView(row1, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // 第二行按钮：TCP连通性测试
+        LinearLayout row2 = new LinearLayout(this);
+        row2.setOrientation(LinearLayout.HORIZONTAL);
+
+        tcpTestButton = new Button(this);
+        tcpTestButton.setText("TCP测试");
+        tcpTestButton.setOnClickListener(view -> testTcpFromInput());
+        row2.addView(tcpTestButton, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+
+        root.addView(row2, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         statusView = new TextView(this);
@@ -184,5 +199,46 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         startButton.setEnabled(enabled);
         stopButton.setEnabled(enabled);
         testPatternButton.setEnabled(enabled);
+    }
+
+    private void testTcpFromInput() {
+        String url = urlInput.getText().toString().trim();
+        new Thread(() -> {
+            String result = testTcpConnect(url);
+            android.util.Log.i("StreamBridgeUI", "TCP test result: " + result);
+            runOnUiThread(() -> {
+                statusView.setText("TCP: " + result);
+                Toast.makeText(MainActivity.this, result, Toast.LENGTH_LONG).show();
+            });
+        }).start();
+    }
+
+    private String testTcpConnect(String rtmpUrl) {
+        // 从 rtmp://host:port/path 中提取 host 和 port
+        String host = rtmpUrl;
+        int port = 1935;
+        try {
+            if (host.startsWith("rtmp://")) host = host.substring(7);
+            int slashIdx = host.indexOf('/');
+            if (slashIdx > 0) host = host.substring(0, slashIdx);
+            int colonIdx = host.lastIndexOf(':');
+            if (colonIdx > 0) {
+                port = Integer.parseInt(host.substring(colonIdx + 1));
+                host = host.substring(0, colonIdx);
+            }
+
+            android.util.Log.i("StreamBridgeUI", "TCP connecting to " + host + ":" + port + " ...");
+            java.net.Socket s = new java.net.Socket();
+            s.connect(new java.net.InetSocketAddress(host, port), 5000);
+            java.net.InetAddress local = s.getLocalAddress();
+            android.util.Log.i("StreamBridgeUI", "TCP OK: local=" + local.getHostAddress() +
+                    " remote=" + s.getInetAddress().getHostAddress());
+            s.close();
+            return "OK: " + host + ":" + port;
+        } catch (Exception e) {
+            android.util.Log.e("StreamBridgeUI", "TCP FAIL: " + e.getClass().getSimpleName() +
+                    ": " + e.getMessage());
+            return "FAIL [" + e.getClass().getSimpleName() + "]: " + e.getMessage();
+        }
     }
 }
