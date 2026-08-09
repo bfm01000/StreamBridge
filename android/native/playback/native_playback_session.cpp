@@ -182,6 +182,10 @@ void NativePlaybackSession::set_error(const std::string& msg) {
     std::lock_guard<std::mutex> lock(mutex_);
     last_error_ = msg;
     state_ = streambridge::SessionState::Error;
+    // 通知所有线程退出
+    abort_requested_ = true;
+    video_packet_queue_.abort();
+    audio_packet_queue_.abort();
     __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Error: %s", msg.c_str());
 }
 

@@ -132,7 +132,12 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 String status = nativeBridge.status();
                 runOnUiThread(() -> statusView.setText(status));
                 if (status.contains("Error") || status.contains("Stopped")) {
-                    runOnUiThread(() -> setButtonsEnabled(true));
+                    runOnUiThread(() -> {
+                        setButtonsEnabled(true);
+                        if (status.contains("Error")) {
+                            Toast.makeText(MainActivity.this, status, Toast.LENGTH_LONG).show();
+                        }
+                    });
                     return;
                 }
             }
