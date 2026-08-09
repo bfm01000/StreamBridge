@@ -206,7 +206,7 @@ void FFmpegVideoCapture::capture_loop() {
                 av_frame_unref(frame.get());
                 on_frame_(std::move(vf));
 
-                if (config_.target_fps > 0) {
+                if (!config_.no_throttle && config_.target_fps > 0) {
                     std::this_thread::sleep_for(
                         std::chrono::microseconds(frame_duration_us.us));
                 }
@@ -221,6 +221,11 @@ void FFmpegVideoCapture::capture_loop() {
     AVPacketPtr pkt = alloc_packet();
     AVFramePtr frame = alloc_frame();
     int64_t frame_idx = 0;
+    AVRational tb = fmt_ctx_->streams[video_stream_idx_]->time_base;
+
+    // 实时节流起点
+    auto wall_start = std::chrono::steady_clock::now();
+    int64_t first_pts_us = -1;
 
     while (!stop_requested_) {
         int ret = av_read_frame(fmt_ctx_.get(), pkt.get());
@@ -228,6 +233,8 @@ void FFmpegVideoCapture::capture_loop() {
             if (config_.loop) {
                 av_seek_frame(fmt_ctx_.get(), video_stream_idx_, 0, AVSEEK_FLAG_BACKWARD);
                 avcodec_flush_buffers(dec_ctx_.get());
+                wall_start = std::chrono::steady_clock::now();
+                first_pts_us = -1;
                 continue;
             }
             break;
@@ -244,9 +251,24 @@ void FFmpegVideoCapture::capture_loop() {
         if (ret < 0) continue;
 
         while (avcodec_receive_frame(dec_ctx_.get(), frame.get()) == 0) {
-            AVRational tb = fmt_ctx_->streams[video_stream_idx_]->time_base;
             VideoFrame vf = avframe_to_videoframe(frame.get(), tb);
             vf.frame_index = frame_idx++;
+
+            // 实时节流（no-throttle 模式下跳过）
+            if (!config_.no_throttle) {
+                int64_t pts_us = vf.pts.us;
+                if (first_pts_us < 0) {
+                    first_pts_us = pts_us;
+                    wall_start = std::chrono::steady_clock::now();
+                } else {
+                    auto expected = wall_start + std::chrono::microseconds(pts_us - first_pts_us);
+                    auto now = std::chrono::steady_clock::now();
+                    if (expected > now) {
+                        std::this_thread::sleep_for(expected - now);
+                    }
+                }
+            }
+
             on_frame_(std::move(vf));
             av_frame_unref(frame.get());
         }

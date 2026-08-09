@@ -1,0 +1,225 @@
+# 推流测试指南
+
+本文档提供 StreamBridge 推流端的快速测试步骤。**你需要先选择测试目标**，然后按对应路径操作。
+
+测试素材：`/home/bfm01000/下载/FRXXZ.mp4`（852×480 H.264 + AAC，推流时自动缩放到 1280×720）。
+
+---
+
+## 0. 选择测试路径
+
+```text
+                    ┌─── 路径 A: 本地验证 ─── 在 Linux 上用 ffplay 观看
+                    │    (需要 Linux 有图形界面)
+启动 SRS + 推流 ───┤
+                    │
+                    └─── 路径 B: Android 验证 ─── Android 手机/模拟器拉流播放
+                         (手机和 Linux 需在同一局域网)
+```
+
+---
+
+## 路径 A：本地验证（ffplay 观看）
+
+### A1. 启动 SRS
+
+```bash
+SRS=~/workspace/tools/srs-centos7/SRS-CentOS7-x86_64-6.0-r0/usr/local/srs/objs/srs
+SRS_DIR=$(dirname $(dirname $SRS))
+cd "$SRS_DIR" && mkdir -p objs
+
+cat > /tmp/srs.conf << 'EOF'
+listen 1935;
+max_connections 100;
+daemon off;
+srs_log_tank console;
+srs_log_level info;
+vhost __defaultVhost__ {}
+EOF
+
+# 如果 SRS 已在运行，跳过此步
+nohup $SRS -c /tmp/srs.conf > /tmp/srs.log 2>&1 &
+
+# 确认端口监听
+ss -tlnp | grep 1935
+```
+
+### A2. 启动推流
+
+```bash
+cd ~/workspace/StreamBridge
+
+./linux/build/app/streambridge_publisher \
+  --rtmp-url rtmp://127.0.0.1:1935/live/test \
+  --video-source '/home/bfm01000/下载/FRXXZ.mp4' \
+  --enable-audio \
+  --audio-source '/home/bfm01000/下载/FRXXZ.mp4' \
+  --audio-backend file \
+  --loop \
+  --log-level info
+
+// rtmp://192.168.31.57:1935/live/test
+
+./linux/build/app/streambridge_publisher \
+  --rtmp-url rtmp://192.168.31.57:1935/live/test \
+  --video-source '/home/bfm01000/下载/FRXXZ.mp4' \
+  --enable-audio \
+  --audio-source '/home/bfm01000/下载/FRXXZ.mp4' \
+  --audio-backend file \
+  --loop \
+  --log-level info
+
+
+```
+
+看到 `state Running` 表示推流成功。
+
+### A3. 观看（另开终端）
+
+```bash
+# 方式 1: 用 ffplay 实时播放（需要图形界面）
+ffplay rtmp://127.0.0.1:1935/live/test
+
+# 方式 2: 无图形界面时，拉流保存为文件，再传到有 GUI 的机器播放 rtmp://192.168.31.57:1935/live/test
+timeout 10 ffmpeg -i rtmp://127.0.0.1:1935/live/test \
+  -t 10 -c copy /tmp/capture.flv
+# 把 /tmp/capture.flv 传到有播放器的机器，用任意播放器打开
+
+# 方式 3: 用 ffprobe 只看参数（不需要 GUI）
+ffprobe -v error -show_entries stream=codec_name,width,height,sample_rate,channels \
+  rtmp://127.0.0.1:1935/live/test
+# 预期: codec_name=h264 width=1280 height=720
+#       codec_name=aac sample_rate=44100 channels=2
+```
+
+### A4. 停止
+
+```bash
+# Ctrl+C 停止推流程序
+# 如需停止 SRS:
+pkill -f "objs/srs"
+```
+
+---
+
+## 路径 B：Android 远程验证（手机/模拟器）
+
+### B1. 确认网络拓扑
+
+```text
+Linux (推流端) ──RTMP──> SRS (Linux 上 1935 端口) <──RTMP── Android (播放端)
+```
+
+Android 需要能访问 Linux 的 1935 端口。
+
+### B2. 获取 Linux 局域网 IP
+
+```bash
+ip addr show | grep "inet " | grep -v 127.0.0.1
+# 示例输出: inet 192.168.1.100/24 ...
+#                ^^^^^^^^^^^^ 记住这个 IP
+```
+
+### B3. 启动 SRS + 推流（同路径 A1+A2）
+
+```bash
+# 1) 启动 SRS（同 A1）
+# 2) 启动推流（同 A2，流名可用 /live/mobile）
+cd ~/workspace/StreamBridge
+
+./linux/build/app/streambridge_publisher \
+  --rtmp-url rtmp://127.0.0.1:1935/live/mobile \
+  --video-source '/home/bfm01000/下载/FRXXZ.mp4' \
+  --enable-audio \
+  --audio-source '/home/bfm01000/下载/FRXXZ.mp4' \
+  --audio-backend file \
+  --loop \
+  --log-level info
+```
+
+### B4. 验证 Linux 端口对 Android 可达
+
+在 Android 设备浏览器中访问（或在 Linux 上测试端口开放）：
+
+```bash
+# 检查 SRS 是否监听全网（0.0.0.0 而非 127.0.0.1）
+ss -tlnp | grep 1935
+# 预期: LISTEN 0 512 0.0.0.0:1935 ...
+#                     ^^^^^^^^^ 必须是 0.0.0.0 或 *，不能是 127.0.0.1
+```
+
+### B5. Android 端操作
+
+**真机：**
+
+App 输入 RTMP URL（替换为你的 Linux IP）：
+```text
+rtmp://192.168.1.100:1935/live/mobile
+```
+点击 **Start** 开始播放。
+
+**Android 模拟器（运行在 Linux 上）：**
+
+模拟器中 `10.0.2.2` 映射到宿主机 localhost：
+```text
+rtmp://10.0.2.2:1935/live/mobile
+```
+
+### B6. 先验证 SRS 流正常（排查用）
+
+如果 Android 端放不了，先在 Linux 上确认流没问题：
+
+```bash
+ffprobe -v error -show_entries stream=codec_name,width,height \
+  rtmp://127.0.0.1:1935/live/mobile
+# 有输出 = 流正常，问题在 Android 网络/APP 端
+# 无输出 = 推流有问题，回去检查 A2
+```
+
+---
+
+## 常见问题
+
+| 现象 | 原因 | 解决 |
+|---|---|---|
+| `Connection refused` | SRS 未启动 | `ss -tlnp \| grep 1935` 确认 |
+| `stream is busy` | 上次推流残留 | `pkill -f streambridge` 后换流名重试 |
+| ffplay 报 `Connection refused` | SRS 未启动或流名不对 | 确认 A1 SRS 已启，A2 推流中 |
+| 保存的 FLV 文件只有几 KB | 拉流前推流未就绪 | 等 A2 输出 `Running` 后再拉 |
+| Android 连不上 | 网络不通或 IP 不对 | Linux 和手机互 ping；检查防火墙 |
+| Android 连上但黑屏 | APP 播放后端不支持 RTMP | 先用 HTTP MP4 URL 验证 APP；RTMP 需 FFmpeg 后端 |
+| 模拟器内连接失败 | 用了 127.0.0.1 | 改用 `10.0.2.2` |
+| 推流中 fps 太低 | CPU 编码 1280×720 吃力 | 加 `--video-bitrate 500000` 降码率 |
+
+---
+
+## 参数速查
+
+| 参数 | 说明 | 默认值 |
+|---|---|---|
+| `--rtmp-url` | RTMP 推流地址 | 必填 |
+| `--video-source` | 视频源（文件路径 / lavfi filter / V4L2 设备） | 必填 |
+| `--enable-audio` | 启用音频 | false |
+| `--audio-source` | 音频源 | 同视频源 |
+| `--audio-backend` | `file` / `lavfi` / `alsa` | file |
+| `--loop` | 文件循环播放（模拟直播） | false |
+| `--video-bitrate` | 视频码率 bps | 2000000 |
+| `--video-width` / `--video-height` | 输出分辨率 | 1280 / 720 |
+| `--log-level` | `debug` / `info` / `warn` / `error` | info |
+
+---
+
+## 日志解读
+
+正常：
+```text
+[I] [session] state Idle -> Preparing -> Prepared -> Running
+[I] [main] uptime=10s cap=... enc=... sent=... drop=0 ...
+[I] [main] exiting
+```
+
+异常信号：
+- `drop > 0`：有丢帧
+- `state ... -> Error`：启动/运行中出错
+- `encode error`：编码失败
+- `stream is busy`：流名被占用

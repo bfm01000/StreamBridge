@@ -50,6 +50,7 @@ struct VideoCaptureConfig {
     int target_fps = 30;
     PixelFormat target_format = PixelFormat::YUV420P;
     bool loop = false;
+    bool no_throttle = false;  // 跳过实时节流（基准测试用）
 };
 
 // 音频采集配置：输入源、目标采样率/声道数/采样格式/帧大小
@@ -60,6 +61,7 @@ struct AudioCaptureConfig {
     SampleFormat target_format = SampleFormat::FLTPlanar;
     int target_frame_size = 1024;
     bool loop = false;
+    bool no_throttle = false;
 };
 
 // ============================================================

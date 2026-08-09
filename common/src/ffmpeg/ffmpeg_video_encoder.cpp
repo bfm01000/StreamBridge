@@ -78,16 +78,22 @@ Result<std::vector<MediaPacket>> FFmpegVideoEncoder::encode(VideoFrame frame) {
             ErrorDomain::Internal, ErrorCode::InvalidState, "Encoder not open");
     }
 
-    // 格式转换（如果需要）
+    // 格式/分辨率转换（源帧与编码器配置不一致时自动缩放）
     AVFramePtr avf(videoframe_to_avframe(frame));
     AVFrame* frame_to_send = avf.get();
+    AVPixelFormat src_fmt = static_cast<AVPixelFormat>(avf->format);
     AVPixelFormat target_fmt = to_av_pixel_format(config_.input_format);
-    if (static_cast<AVPixelFormat>(avf->format) != target_fmt) {
-        if (!sws_) {
+    bool fmt_mismatch = (src_fmt != target_fmt);
+    bool size_mismatch = (avf->width != config_.width || avf->height != config_.height);
+
+    if (fmt_mismatch || size_mismatch) {
+        if (!sws_ || sws_src_width_ != avf->width || sws_src_height_ != avf->height) {
             sws_.reset(sws_getContext(
-                avf->width, avf->height, static_cast<AVPixelFormat>(avf->format),
+                avf->width, avf->height, src_fmt,
                 config_.width, config_.height, target_fmt,
                 SWS_BILINEAR, nullptr, nullptr, nullptr));
+            sws_src_width_ = avf->width;
+            sws_src_height_ = avf->height;
             converted_frame_ = alloc_frame();
             converted_frame_->format = target_fmt;
             converted_frame_->width = config_.width;
@@ -168,6 +174,8 @@ Result<std::vector<MediaPacket>> FFmpegVideoEncoder::drain() {
 
 void FFmpegVideoEncoder::close() {
     sws_.reset();
+    sws_src_width_ = 0;
+    sws_src_height_ = 0;
     converted_frame_.reset();
     packet_.reset();
     codec_ctx_.reset();

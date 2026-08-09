@@ -127,24 +127,25 @@ AudioFrame avframe_to_audioframe(const AVFrame* avf, AVRational tb) {
     af.pts.us = pts_to_us(avf->pts, tb);
     af.duration = TimeDeltaUs::from_samples(af.num_samples, af.sample_rate);
 
-    size_t total = 0;
+    // 注意：FFmpeg 对 planar 音频只保证 linesize[0] 有值，
+    // 其他 plane 的 linesize 可能为 0。所有 plane 大小相同 = linesize[0]。
+    size_t plane_sz = avf->linesize[0] > 0 ? static_cast<size_t>(avf->linesize[0]) : 0;
     af.num_planes = 0;
     for (int i = 0; i < AudioFrame::kMaxPlanes && i < AV_NUM_DATA_POINTERS; i++) {
         if (!avf->data[i]) break;
-        total += avf->linesize[i];
         af.num_planes++;
     }
+    size_t total = plane_sz * af.num_planes;
 
     auto buf = std::make_shared<CpuFrameBuffer>(total);
     size_t off = 0;
     for (int i = 0; i < af.num_planes; i++) {
-        size_t sz = avf->linesize[i];
-        std::memcpy(buf->data() + off, avf->data[i], sz);
+        std::memcpy(buf->data() + off, avf->data[i], plane_sz);
         af.planes[i].offset = off;
         af.planes[i].data = buf->data() + off;
-        af.planes[i].size = sz;
+        af.planes[i].size = plane_sz;
         af.planes[i].stride = 0;
-        off += sz;
+        off += plane_sz;
     }
 
     af.buffer = std::move(buf);

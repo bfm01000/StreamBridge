@@ -27,7 +27,7 @@ struct AppConfig {
     int audio_bitrate = 128'000;
     // 视频 backend
     std::string video_backend;      // "lavfi" (default), "file", "v4l2"
-    bool loop = false;
+    bool loop = true;   // 默认连续推流（24x7），--no-loop 可关闭
     bool no_throttle = false;
     std::string log_level_str = "info";
 

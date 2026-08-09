@@ -73,7 +73,10 @@ Result<std::vector<MediaPacket>> FFmpegAudioEncoder::encode(AudioFrame frame) {
     AVSampleFormat src_fmt = to_av_sample_format(frame.format);
 
     // 初始化/更新重采样器
-    if (!swr_ || swr_in_sample_rate_ != frame.sample_rate || swr_in_fmt_ != src_fmt ||
+    // 注意：输入音频始终会交织(interleave)到 acc_buffer_ 中，
+    // 因此 swr 输入格式必须使用 packed（非 planar）格式
+    AVSampleFormat swr_in_fmt = av_get_packed_sample_fmt(src_fmt);
+    if (!swr_ || swr_in_sample_rate_ != frame.sample_rate || swr_in_fmt_ != swr_in_fmt ||
         acc_channels_ != frame.channels) {
         AVSampleFormat dst_fmt = to_av_sample_format(config_.input_format);
         SwrContext* raw = nullptr;
@@ -83,14 +86,14 @@ Result<std::vector<MediaPacket>> FFmpegAudioEncoder::encode(AudioFrame frame) {
         av_channel_layout_default(&out_ch_layout, config_.channels);
         swr_alloc_set_opts2(&raw,
             &out_ch_layout, dst_fmt, config_.sample_rate,
-            &in_ch_layout, src_fmt, frame.sample_rate,
+            &in_ch_layout, swr_in_fmt, frame.sample_rate,
             0, nullptr);
 #else
         int64_t in_layout = frame.channels == 2 ? AV_CH_LAYOUT_STEREO : AV_CH_LAYOUT_MONO;
         int64_t out_layout = config_.channels == 2 ? AV_CH_LAYOUT_STEREO : AV_CH_LAYOUT_MONO;
         raw = swr_alloc_set_opts(nullptr,
             out_layout, dst_fmt, config_.sample_rate,
-            in_layout, src_fmt, frame.sample_rate,
+            in_layout, swr_in_fmt, frame.sample_rate,
             0, nullptr);
 #endif
         if (!raw || swr_init(raw) < 0) {
@@ -101,7 +104,7 @@ Result<std::vector<MediaPacket>> FFmpegAudioEncoder::encode(AudioFrame frame) {
         }
         swr_.reset(raw);
         swr_in_sample_rate_ = frame.sample_rate;
-        swr_in_fmt_ = src_fmt;
+        swr_in_fmt_ = swr_in_fmt;
         acc_format_ = frame.format;
         acc_channels_ = frame.channels;
         acc_samples_ = 0;
@@ -119,13 +122,14 @@ Result<std::vector<MediaPacket>> FFmpegAudioEncoder::encode(AudioFrame frame) {
         memcpy(acc_buffer_.data() + old_size, frame.planes[0].data, incoming_bytes);
     } else {
         // Planar: 需要交错存放
+        int bps = bytes_per_sample;
         for (int s = 0; s < frame.num_samples; s++) {
             for (int ch = 0; ch < frame.channels && ch < frame.num_planes; ch++) {
-                const uint8_t* src = frame.planes[ch].data + s * bytes_per_sample;
-                acc_buffer_.insert(acc_buffer_.end(), src, src + bytes_per_sample);
+                const uint8_t* src = frame.planes[ch].data + s * bps;
+                acc_buffer_.insert(acc_buffer_.end(), src, src + bps);
             }
         }
-        incoming_bytes = frame.num_samples * frame.channels * bytes_per_sample;
+        incoming_bytes = frame.num_samples * frame.channels * bps;
     }
     acc_samples_ += frame.num_samples;
 
@@ -134,12 +138,15 @@ Result<std::vector<MediaPacket>> FFmpegAudioEncoder::encode(AudioFrame frame) {
     std::vector<MediaPacket> all_packets;
     int64_t base_pts = frame_count_;
 
+    // acc_buffer_ 中已是交错（interleaved）格式，使用对应的 packed sample format
+    AVSampleFormat acc_fmt = av_get_packed_sample_fmt(src_fmt);
+
     while (acc_samples_ >= frame_size) {
         int chunk_bytes = frame_size * acc_channels_ * bytes_per_sample;
 
         // 构建源 AVFrame（交错格式）
         AVFramePtr src_avf = alloc_frame();
-        src_avf->format = src_fmt;
+        src_avf->format = acc_fmt;
         src_avf->sample_rate = swr_in_sample_rate_;
         src_avf->nb_samples = frame_size;
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 28, 0)

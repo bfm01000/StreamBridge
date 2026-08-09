@@ -31,7 +31,8 @@ void print_usage(const char* prog) {
         "  --audio-sample-rate <hz>   Audio sample rate (default: 48000)\n"
         "  --audio-channels <n>       Audio channels (default: 2)\n"
         "  --audio-bitrate <bps>      Audio bitrate (default: 128000)\n"
-        "  --loop                     Loop source file\n"
+        "  --loop                     Loop source file (default: on)\n"
+        "  --no-loop                  Stop after one pass through the file\n"
         "  --no-throttle              Don't throttle to real-time (for benchmarks)\n"
         "  --log-level <level>        Log level: debug, info, warn, error (default: info)\n"
         "  --help                     Show this help\n"
@@ -66,6 +67,7 @@ Result<AppConfig> AppConfig::parse(int argc, char* argv[]) {
         {"audio-channels",   required_argument, nullptr, 'C'},
         {"audio-bitrate",    required_argument, nullptr, 'b'},
         {"loop",             no_argument,       nullptr, 'l'},
+        {"no-loop",          no_argument,       nullptr, 258},
         {"no-throttle",      no_argument,       nullptr, 'n'},
         {"log-level",        required_argument, nullptr, 'L'},
         {"help",             no_argument,       nullptr, 'h'},
@@ -89,6 +91,7 @@ Result<AppConfig> AppConfig::parse(int argc, char* argv[]) {
             case 256: cfg.audio_backend = optarg; break;
             case 257: cfg.video_backend = optarg; break;
             case 'l': cfg.loop = true; break;
+            case 258: cfg.loop = false; break;  // --no-loop
             case 'n': cfg.no_throttle = true; break;
             case 'L': cfg.log_level_str = optarg; break;
             case 'h': print_usage(argv[0]); std::exit(0);
@@ -127,6 +130,7 @@ PublishSessionConfig AppConfig::to_session_config() const {
     s.video_capture.target_height = video_height;
     s.video_capture.target_fps = video_fps;
     s.video_capture.loop = loop;
+    s.video_capture.no_throttle = no_throttle;
 
     s.video_encode.width = video_width;
     s.video_encode.height = video_height;
@@ -137,6 +141,8 @@ PublishSessionConfig AppConfig::to_session_config() const {
         s.audio_capture.source = audio_source;
         s.audio_capture.target_sample_rate = audio_sample_rate;
         s.audio_capture.target_channels = audio_channels;
+        s.audio_capture.loop = loop;
+        s.audio_capture.no_throttle = no_throttle;
 
         s.audio_encode.sample_rate = audio_sample_rate;
         s.audio_encode.channels = audio_channels;

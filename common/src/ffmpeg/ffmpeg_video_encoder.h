@@ -27,6 +27,8 @@ private:
     AVCodecContextPtr codec_ctx_;
     AVPacketPtr packet_;
     SwsContextPtr sws_;
+    int sws_src_width_ = 0;
+    int sws_src_height_ = 0;
     AVFramePtr converted_frame_;
     VideoEncodeConfig config_;
     bool is_open_ = false;
