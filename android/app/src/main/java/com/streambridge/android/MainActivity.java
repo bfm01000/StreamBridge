@@ -57,7 +57,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
 
         testPatternButton = new Button(this);
-        testPatternButton.setText("Native Test");
+        testPatternButton.setText("MP4/HTTP");
         testPatternButton.setOnClickListener(view -> renderNativeTestPattern());
         buttons.addView(testPatternButton, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
@@ -106,19 +106,49 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             onError("URL is empty");
             return;
         }
-        setButtonsEnabled(false);
-        mediaPlayerBackend.start(url);
-        setButtonsEnabled(true);
+        // RTMP 走 native FFmpeg 后端
+        if (url.startsWith("rtmp://") || url.startsWith("rtmps://")) {
+            setButtonsEnabled(false);
+            int result = nativeBridge.start(url, surfaceView.getHolder().getSurface());
+            if (result == 0) {
+                onStatus("Native playback started: " + nativeBridge.status());
+                pollNativeStatus();
+            } else {
+                onError("Native start failed: " + result + " " + nativeBridge.status());
+                setButtonsEnabled(true);
+            }
+        } else {
+            // HTTP/HTTPS/本地文件走系统 MediaPlayer
+            setButtonsEnabled(false);
+            mediaPlayerBackend.start(url);
+            setButtonsEnabled(true);
+        }
+    }
+
+    private void pollNativeStatus() {
+        new Thread(() -> {
+            for (int i = 0; i < 600; i++) {  // poll up to 60s
+                try { Thread.sleep(100); } catch (InterruptedException e) { break; }
+                String status = nativeBridge.status();
+                runOnUiThread(() -> statusView.setText(status));
+                if (status.contains("Error") || status.contains("Stopped")) {
+                    runOnUiThread(() -> setButtonsEnabled(true));
+                    return;
+                }
+            }
+        }).start();
     }
 
     private void renderNativeTestPattern() {
+        // 保留：系统 MediaPlayer 播放非 RTMP 地址
         String url = urlInput.getText().toString().trim();
-        int result = nativeBridge.start(url, surfaceView.getHolder().getSurface());
-        if (result == 0) {
-            onStatus("Native test pattern rendered: " + nativeBridge.status());
-        } else {
-            onError("Native start failed: " + result + " " + nativeBridge.status());
+        if (url.isEmpty()) {
+            onError("URL is empty");
+            return;
         }
+        setButtonsEnabled(false);
+        mediaPlayerBackend.start(url);
+        setButtonsEnabled(true);
     }
 
     private void stopPlayback() {
@@ -129,6 +159,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         if (statusView != null) {
             statusView.setText("Stopped");
         }
+        setButtonsEnabled(true);
     }
 
     @Override
