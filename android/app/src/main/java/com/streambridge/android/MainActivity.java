@@ -37,7 +37,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
         urlInput = new EditText(this);
         urlInput.setSingleLine(true);
-        urlInput.setText("rtmp://10.0.2.2/live/stream");
+        urlInput.setText("rtmp://192.168.31.57:1935/live/test");
         root.addView(urlInput, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
