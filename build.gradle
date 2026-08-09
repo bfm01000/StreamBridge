@@ -1,0 +1,14 @@
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    configurations.classpath {
+        resolutionStrategy.force "org.jetbrains.kotlin:kotlin-reflect:2.3.20"
+    }
+
+    dependencies {
+        classpath "com.android.tools.build:gradle:9.3.0"
+    }
+}

@@ -432,3 +432,102 @@ arecord -d 3 -f cd -t wav /tmp/test.wav
 
 # 如果没有 hw:0,0，尝试 default 或 plughw:0,0
 ```
+
+---
+
+## 8. Android 构建与运行
+
+Android 端禁止 Kotlin，framework 层使用 Java，媒体主链路优先 C++/JNI。当前 Android 工程已完成最小 Java + JNI + C++ native 集成，并使用 NDK 自带 `ndk-build` 构建 native 层。
+
+### 8.1 当前 Android 工程
+
+```text
+settings.gradle
+build.gradle
+android/app/build.gradle
+android/app/src/main/AndroidManifest.xml
+android/app/src/main/java/com/streambridge/android/MainActivity.java
+android/app/src/main/java/com/streambridge/android/NativeBridge.java
+android/app/src/main/java/com/streambridge/android/PlaybackEvents.java
+android/app/src/main/java/com/streambridge/android/SystemMediaPlayerBackend.java
+android/app/src/main/res/values/styles.xml
+android/native/Android.mk
+android/native/Application.mk
+android/native/CMakeLists.txt
+android/native/jni/streambridge_jni.cpp
+android/native/playback/native_playback_session.h
+android/native/playback/native_playback_session.cpp
+scripts/android-publish-sample.ps1
+```
+
+### 8.2 Windows 构建命令
+
+已验证环境：
+
+- Android Studio JBR：`D:\soft\AS\jbr`
+- Android SDK：`D:\soft\AS_sdk`
+- Android NDK：`28.2.13676358`
+- Android Gradle Plugin：`9.3.0`
+- Gradle Wrapper：`9.5.0`
+- compileSdk / targetSdk：`37`
+- ABI：`arm64-v8a`
+
+```powershell
+cmd /c "set JAVA_HOME=D:\soft\AS\jbr&& set ANDROID_HOME=D:\soft\AS_sdk&& set ANDROID_SDK_ROOT=D:\soft\AS_sdk&& set GRADLE_USER_HOME=C:\Users\10177\.gradle&& set PATH=D:\soft\AS\jbr\bin;D:\soft\AS_sdk\platform-tools;%PATH%&& gradlew.bat :android:app:assembleDebug --offline --no-daemon"
+```
+
+也可以使用仓库脚本执行 Android 端单边自检：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1
+```
+
+预期结果：
+
+```text
+BUILD SUCCESSFUL
+android/app/build/outputs/apk/debug/app-debug.apk
+compileDebugKotlin NO-SOURCE
+```
+
+### 8.3 真机安装与启动
+
+```powershell
+adb -s 84d32674 install -r android\app\build\outputs\apk\debug\app-debug.apk
+adb -s 84d32674 shell am start -n com.streambridge.android/.MainActivity
+```
+
+如果安装失败：
+
+```text
+INSTALL_FAILED_USER_RESTRICTED: Install canceled by user
+```
+
+需要在手机开发者选项或系统安全设置中允许 USB 安装、允许未知来源安装，或允许当前调试来源安装应用。当前 APK 已构建成功，真机运行验证只被设备侧安装权限阻塞。
+
+### 8.4 Android 单边验证
+
+Android 播放端不需要等待 Linux 推流端完成，可用本地媒体文件通过 FFmpeg 推流到 SRS，模拟 Linux 端：
+
+```powershell
+.\scripts\android-publish-sample.ps1 -InputPath D:\media\sample.mp4 -RtmpUrl rtmp://127.0.0.1/live/stream
+```
+
+Android 模拟器访问宿主机 SRS 时，App 内 URL 通常使用：
+
+```text
+rtmp://10.0.2.2/live/stream
+```
+
+真机访问同一局域网机器时，使用宿主机 LAN IP：
+
+```text
+rtmp://<host-lan-ip>/live/stream
+```
+
+当前 App 提供两个验证入口：
+
+- `Native Test`：生成公共 `VideoFrame`，通过 C++ `NativeVideoRenderer` 渲染到 `ANativeWindow`，验证 Java/JNI/native/common frame/Surface 链路。
+- `Start`：使用 Java `MediaPlayer` 播放输入 URL，验证 UI、Surface 和系统播放后端。
+
+注意：`MediaPlayer` 对 RTMP 的支持取决于设备系统能力。如果设备系统不支持 RTMP，可先用 HTTP MP4/HLS URL 验证 Android 播放 UI、Surface 和音频输出；稳定 RTMP 播放仍需要后续接入 Android FFmpeg ABI。

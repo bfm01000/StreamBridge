@@ -104,7 +104,7 @@ StreamBridge/
 
 `linux/` 放 Linux 入口、设备能力探测、FFmpeg avdevice、V4L2/ALSA 后续原生适配、SRS/运行脚本文档和 Linux 平台输出。
 
-`android/` 放 Android 工程、Activity、权限、Surface 生命周期、JNI glue、AAudio/AudioTrack、ANativeWindow/OpenGL ES、MediaCodec 后续适配。
+`android/` 放 Android 工程、Java Activity、权限、Surface 生命周期、JNI glue、AAudio/AudioTrack、ANativeWindow/OpenGL ES、MediaCodec 后续适配。Android 端禁止使用 Kotlin。
 
 避免过度抽象的规则：
 
@@ -370,7 +370,7 @@ Android 接收链路尽量放在 C++：
 - A/V sync controller。
 - Native renderer/audio output adapter。
 
-Kotlin/Java 只负责：
+Java 只负责：
 
 - Activity/Fragment 生命周期；
 - 权限申请；
@@ -381,7 +381,7 @@ Kotlin/Java 只负责：
 
 JNI 边界：
 
-- Java/Kotlin 持有 native handle，不逐帧传递媒体数据。
+- Java 持有 native handle，不逐帧传递媒体数据。
 - `start(url, surface)`、`stop()`、`onSurfaceCreated/Changed/Destroyed()`、`release()` 为稳定 API。
 - JNI 层只做参数校验、对象生命周期和线程 attach/detach。
 - C++ 需要把 JavaVM 保存为弱平台上下文，禁止长期持有 Activity 强引用。

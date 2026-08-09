@@ -1,1 +1,13 @@
 linux/build/
+
+.gradle/
+build/
+local.properties
+
+**/build/
+**/.cxx/
+**/.externalNativeBuild/
+**/obj/
+
+*.iml
+.idea/

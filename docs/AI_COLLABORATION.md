@@ -10,9 +10,9 @@
 | --- | --- | --- | --- |
 | 阶段 1：项目分析与架构设计 | DONE | Android AI / Linux AI / 用户 | 架构文档已完成，用户确认。 |
 | 阶段 2：公共接口确认 | DONE | Linux AI | `common/` 8 个头文件已实现，接口体系稳定。 |
-| 阶段 3：Android 构建集成 | TODO | Android AI | 待 Android AI 开始 Gradle、NDK、JNI 和 Android native 集成。 |
+| 阶段 3：Android 构建集成 | DONE | Android AI | Java + JNI + C++ native Android 工程已创建，`assembleDebug` 构建通过；真实 FFmpeg 播放链路待后续里程碑接入。 |
 | 阶段 4：Linux 构建集成 | DONE | Linux AI | CMake 工程完成，M2 video-only + M3 audio/video 推流验证通过。 |
-| 阶段 5：端到端联调 | TODO | Android AI / Linux AI | 待 Android AI 完成 M4 后开始联调。 |
+| 阶段 5：端到端联调 | TODO | Android AI / Linux AI | 两端基于已确认公共接口做联调验证。 |
 
 状态枚举：
 
@@ -180,6 +180,11 @@
 | 2026-08-06 | 音频编码使用 swr 重采样器处理格式转换（sine FLT → AAC FLTP） | 不同 lavfi 源输出格式不同，编码器需做通用格式适配 | Linux 发布端 | Linux AI | 否 |
 | 2026-08-06 | Mux loop 使用 try_peek 非阻塞查看两队首，按 PTS 交织 | 避免阻塞等待其中一路导致另一路队列堆积 | Linux 发布端 | Linux AI | 是（Android 播放端可能也需要类似的音视频队列交织逻辑） |
 | 2026-08-06 | 音频采集 lavfi 源也需限速（sleep by duration） | 否则 sine 等源会全速跑满 CPU，与实际设备行为不符 | Linux 发布端 | Linux AI | 否 |
+| 2026-08-05 | Android 端禁止 Kotlin，framework 层使用 Java | 用户明确要求 Android 端禁用 Kotlin；媒体主链路继续优先 C++/JNI | Android | 用户 / Codex | 否 |
+| 2026-08-05 | Android 端先创建最小 Java + JNI + C++ native 工程骨架 | 先验证 Activity/Surface/JNI/native lifecycle，后续再接入 FFmpeg Android ABI 和播放链路 | Android | Codex | 否 |
+| 2026-08-08 | Android 当前提供系统 `MediaPlayer` 后端和 native Surface 测试后端 | 本机无现成 FFmpeg Android ABI；先保证 Android 端可构建、可安装包、可用 URL 播放后端验证 Surface/音频/UI，FFmpeg 后端保留为后续替换点 | Android | Codex | 否 |
+| 2026-08-09 | FFmpeg for Android 使用 `--disable-all` 最小化构建 | Windows `CreateProcess` 命令行长度限制 ~32767 字符，完整 FFmpeg 的 .o 文件数（1000+）导致链接/归档步骤截断参数；`--disable-all` + 仅启用 H.264/AAC 解码/FLV 解封装/RTMP 协议后，总 .so 体积 ~3.5MB | Android FFmpeg 构建 | Android AI | 否 |
+| 2026-08-09 | FFmpeg for Android 使用 MSYS2 UCRT64 gcc 15.2.0 作为 Host C 编译器 | NDK clang 无法直接作为 Windows Host 编译器（缺少 MinGW 库）；MSYS2 gcc 在 PATH 最前面才能让内部工具（cc1/as/ld）找到其 DLL；使用 `--pkg-config=false --disable-sdl2` 等标志隔离开 MSYS2 环境对 Android 编译的污染 | Android FFmpeg 构建 | Android AI | 否 |
 
 ## 6. Pending Changes
 
@@ -192,14 +197,17 @@
 | P-005 | Linux | 确认 Linux SRS 部署方式 | 本机当前未安装 SRS，需要决定：本机源码编译、Docker 运行还是连接远程 SRS；虚拟机内 Docker 可能也有网络限制 | Android 需要稳定 RTMP URL 做拉流测试 | 影响 Milestone 1-3 能否开始 | PROPOSED，需要用户决策 |
 | P-006 | Shared | 确认是否创建最小单边验证脚本 | 用本地文件/FFmpeg/Python 模拟对端，减少跨机器等待 | Android 可独立验证播放端 | Linux 可独立验证推流端 | PROPOSED |
 | P-007 | Linux | 确认 Linux 端在没有真实摄像头的情况下如何验证视频采集 | 虚拟机无 /dev/video* 设备；Milestone 2 需要先使用本地文件或 lavfi 模拟视频输入，等后续有物理机或 USB 直通再验证真实摄像头 | 无直接影响 | 影响 Milestone 2 的验证方式 | PROPOSED，需要用户决策 |
+| P-008 | Android | 确认 Android SDK/NDK/Gradle/AGP 版本 | 已使用 Android SDK 37、NDK 28.2.13676358、AGP 9.3.0、Gradle 9.5.0 完成 debug 构建 | `:android:app:assembleDebug` 已通过 | 无直接影响 | DONE |
 
 ## 7. Blockers
 
 | 编号 | 阻塞项 | 阻塞端 | 需要谁处理 | 需要的信息 | 临时绕过方案 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- |
-| B-001 | 架构尚未确认 | Android / Linux / Shared | 用户 | 是否认可 `docs/architecture.md`、`docs/timestamp-and-av-sync.md`、`docs/milestones.md` | 仅继续文档评审，不写业务代码 | BLOCKED |
+| B-001 | 架构尚未确认 | Android / Linux / Shared | 用户 | 用户已要求两端开始执行 | 两端已进入实现；后续架构冲突仍需先记录再确认 | DONE |
 | B-002 | FFmpeg 缺少 libx264 软件编码器 | Linux | Linux AI / 用户 | 当前 FFmpeg 自编译版本未启用 libx264（需要 `--enable-libx264 --enable-gpl`）。需安装 `libx264-dev` 并重新编译 FFmpeg，或改用系统包管理器提供的 FFmpeg。重新编译约需 5-15 分钟 | 在 Milestone 1 之前不需要 libx264（M1 用 FFmpeg 命令推流，可以使用系统 FFmpeg 或预编译的带 libx264 的 FFmpeg binary）；M2/M3 开始需要 libx264 | BLOCKED（阻塞 Milestone 2+ 的 C++ 编码链路；M1 可以用系统包或 side-install FFmpeg 绕过） |
 | B-003 | 虚拟机无摄像头设备 | Linux | Linux AI / 用户 | /dev/video* 不存在；USB 摄像头直通需要 VMware/VirtualBox 配置或使用物理机 | M2/M3 的视频采集验证可用本地文件/lavfi 测试源代替 | BLOCKED（阻塞真实摄像头采集验证，但不阻塞 Milestone 1 和编码推流路径验证） |
+| B-004 | 本机缺 Android 构建工具 | Android | 用户 / Android AI | 已安装 NDK r28b，并使用 Android Studio JBR、SDK、Gradle Wrapper 完成构建 | `gradlew.bat :android:app:assembleDebug --offline --no-daemon` 已通过 | DONE |
+| B-005 | 真机拒绝安装 debug APK | Android | 用户 | 设备需允许 USB 安装或未知来源安装 | APK 已构建成功，可待设备设置放开后重试安装 | BLOCKED |
 
 ## 8. Git Workflow
 
@@ -371,6 +379,141 @@ shared/interface-contract
   - MJPG 解码器输出 "unable to decode APP fields" 警告（USB 摄像头 EXIF 元数据，不影响图像质量）
   - 虚拟机中 `/dev/video0` 由 USB 直通提供，不同环境设备名可能不同
 - 下一步建议：Linux 端推流能力已完成（4 种采集源 × 2 种编码器 × RTMP 发布），可进入 Android 端开发
+
+### 2026-08-05 Android AI Initial Build Integration
+
+- 完成内容：作为 Android 端执行者，创建最小 Java + JNI + C++ native 工程骨架，禁用 Kotlin；补充 Android 单边验证脚本和构建说明。
+- 修改文件：`settings.gradle`、`build.gradle`、`android/app/build.gradle`、`android/app/src/main/AndroidManifest.xml`、`android/app/src/main/java/com/streambridge/android/MainActivity.java`、`android/app/src/main/java/com/streambridge/android/NativeBridge.java`、`android/app/src/main/res/values/styles.xml`、`android/native/CMakeLists.txt`、`android/native/jni/streambridge_jni.cpp`、`android/native/playback/native_playback_session.h`、`android/native/playback/native_playback_session.cpp`、`scripts/android-publish-sample.ps1`、`docs/build-and-run.md`、`docs/architecture.md`、`docs/AI_COLLABORATION.md`、`AI_START_PROMPT.md`。
+- 验证结果：本机检测到 FFmpeg/ffplay，但未检测到 Java、Gradle、Android SDK、NDK、CMake 或 adb；执行 `gradle :android:app:assembleDebug` 失败，原因为 `gradle` 命令不在 PATH。XML 可解析、无 Kotlin 文件、PowerShell 单边验证脚本语法 OK。
+- 依赖另一端：暂不依赖 Linux 端；Android 播放端后续可用 `scripts/android-publish-sample.ps1` 模拟推流端。
+- 未修改内容：未修改 Linux 目录，未创建 `common/` 公共代码，未接入 FFmpeg Android ABI，未实现真正 RTMP 解封装/解码。
+- 下一步建议：在具备 Android SDK/NDK 的机器上执行 `gradle :android:app:assembleDebug`，修正环境或版本问题后再接入 FFmpeg Android 依赖。
+
+### 2026-08-08 Android AI Build Completion
+
+- 完成内容：安装 Android NDK r28b，切换 native 构建到 NDK 自带 `ndk-build`，生成 Gradle Wrapper，补充 native Surface 测试图，完成 debug APK 构建。
+- 修改文件：`.gitignore`、`build.gradle`、`gradlew`、`gradlew.bat`、`gradle/wrapper/gradle-wrapper.jar`、`gradle/wrapper/gradle-wrapper.properties`、`android/app/build.gradle`、`android/native/Android.mk`、`android/native/Application.mk`、`android/native/playback/native_playback_session.h`、`android/native/playback/native_playback_session.cpp`、`docs/build-and-run.md`、`docs/AI_COLLABORATION.md`。
+- 验证结果：`gradlew.bat :android:app:assembleDebug --offline --no-daemon` 构建成功；APK 输出为 `android/app/build/outputs/apk/debug/app-debug.apk`；无 `.kt` 文件；`AGENTS.md` 和 `CLAUDE.md` SHA256 一致。
+- 真机结果：检测到设备 `84d32674`，但 `adb install -r` 失败，原因为 `INSTALL_FAILED_USER_RESTRICTED: Install canceled by user`。
+- 依赖另一端：暂不依赖 Linux 端；当前 Android 端可通过 C++ Surface 测试图验证 Java/JNI/native/Surface 链路。
+- 未修改内容：未修改 Linux 目录，未创建 shared common 代码，未接入 FFmpeg Android ABI，未实现真实 RTMP 解封装/解码。
+- 下一步建议：设备允许 USB 安装后重试安装；随后接入 FFmpeg Android ABI，并把 native session 从测试图推进到 RTMP 拉流、解封装、软件解码和 A/V 同步。
+
+### 2026-08-08 Android AI Playback Backend Completion
+
+- 完成内容：新增 Java `MediaPlayer` 系统播放后端、播放状态回调、`Native Test` 按钮和 cleartext 网络配置；保留 C++ native Surface 测试图和后续 FFmpeg 后端接入点。
+- 修改文件：`android/app/src/main/AndroidManifest.xml`、`android/app/src/main/java/com/streambridge/android/MainActivity.java`、`android/app/src/main/java/com/streambridge/android/PlaybackEvents.java`、`android/app/src/main/java/com/streambridge/android/SystemMediaPlayerBackend.java`、`docs/build-and-run.md`、`docs/AI_COLLABORATION.md`。
+- 验证结果：`gradlew.bat :android:app:assembleDebug --offline --no-daemon` 构建成功；无 `.kt` 文件；APK 输出 `android/app/build/outputs/apk/debug/app-debug.apk`。
+- 真机结果：设备 `84d32674` 在线，但安装仍失败：`INSTALL_FAILED_USER_RESTRICTED: Install canceled by user`。
+- 依赖另一端：暂不依赖 Linux 端；如果设备系统支持 RTMP，可直接填入 SRS URL；若不支持，先用 HTTP MP4/HLS URL 验证系统播放后端。
+- 未修改内容：未修改 Linux 目录，未接入 FFmpeg Android ABI，未实现 C++ FFmpeg 解封装/解码/AV sync。
+- 下一步建议：放开手机 USB 安装权限后安装运行；若必须稳定支持 RTMP，则接入 FFmpeg Android ABI 或由另一端提供 Android 可用 FFmpeg 预编译包。
+
+### 2026-08-08 Android AI Final Verification
+
+- 完成内容：对当前 Android 代码做最终离线构建和设备安装复核。
+- 验证结果：`gradlew.bat :android:app:assembleDebug --offline --no-daemon` 构建成功，Gradle 显示 `compileDebugKotlin NO-SOURCE`；仓库内无 `.kt` 文件；`AGENTS.md` 和 `CLAUDE.md` SHA256 完全一致；APK 输出为 `android/app/build/outputs/apk/debug/app-debug.apk`。
+- 真机结果：`adb devices` 显示设备 `84d32674 device`；`adb install -r android\app\build\outputs\apk\debug\app-debug.apk` 仍失败，原因为 `INSTALL_FAILED_USER_RESTRICTED: Install canceled by user`。
+- 当前结论：Android 端代码和构建产物已完成到可构建 APK；最终真机运行验证被设备侧安装权限阻塞。
+
+### 2026-08-09 Android AI Common Interface Alignment
+
+- 完成内容：在拉取 Linux/common 最新代码后，Android native 层接入 `common/include`，`NativePlaybackSession` 改用公共 `SessionState` 表达生命周期状态；JNI 增加 native 状态查询；Java UI 增加 URL 校验和错误 Toast；保留系统 `MediaPlayer` 播放后端与 C++ Surface 测试后端。
+- 修改文件：`android/native/Android.mk`、`android/native/CMakeLists.txt`、`android/native/playback/native_playback_session.h`、`android/native/playback/native_playback_session.cpp`、`android/native/jni/streambridge_jni.cpp`、`android/app/src/main/java/com/streambridge/android/NativeBridge.java`、`android/app/src/main/java/com/streambridge/android/MainActivity.java`、`docs/AI_COLLABORATION.md`。
+- 验证结果：`gradlew.bat :android:app:assembleDebug --offline --no-daemon` 构建成功；Gradle 显示 `compileDebugKotlin NO-SOURCE`；仓库内无 `.kt` 文件。
+- 真机结果：`adb install -r android\app\build\outputs\apk\debug\app-debug.apk` 仍失败，原因为 `INSTALL_FAILED_USER_RESTRICTED: Install canceled by user`。
+- 依赖另一端：已读取并消费 `common/` 头文件；后续真正 RTMP 解封装/解码仍依赖 Android 可用 FFmpeg ABI 或等价播放库。
+- 未修改内容：未修改 Linux 目录，未实现 Android 推流，未引入 Kotlin。
+
+### 2026-08-09 Android AI Native Renderer Path
+
+- 完成内容：新增 `NativeVideoRenderer`，支持将公共 `VideoFrame` 的 RGBA/BGRA/YUV420P 数据渲染到 `ANativeWindow`；`NativePlaybackSession` 的测试图改为先生成公共 `VideoFrame`，再走 renderer 输出，提前验证后续 FFmpeg 解码帧的 Android 渲染接入点；新增 `scripts/android-verify.ps1` 执行构建、Kotlin 禁用检查、APK 输出检查和可选安装。
+- 修改文件：`android/native/playback/native_video_renderer.h`、`android/native/playback/native_video_renderer.cpp`、`android/native/playback/native_playback_session.h`、`android/native/playback/native_playback_session.cpp`、`android/native/Android.mk`、`android/native/CMakeLists.txt`、`scripts/android-verify.ps1`、`docs/build-and-run.md`、`docs/AI_COLLABORATION.md`。
+- 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 成功；Gradle 显示 `compileDebugKotlin NO-SOURCE`；APK 输出为 `android/app/build/outputs/apk/debug/app-debug.apk`，大小 2217329 bytes。
+- 依赖另一端：renderer 已对齐 `common::VideoFrame`，Linux 推流端完成后可用 SRS URL 做播放验证；Android FFmpeg ABI 尚未接入，RTMP 原生解封装/解码仍待依赖到位。
+- 未修改内容：未修改 Linux 目录，未提交大型第三方 FFmpeg 二进制，未引入 Kotlin。
+
+### 2026-08-09 Android AI Audio Clock And Sync
+
+- 完成内容：新增 Android native `PlaybackClock`、`AVSyncController` 和 `NativeAudioOutput`；`PlaybackClock` 支持无音频时 wall clock 回退与音频播放位置主时钟；`AVSyncController` 按文档阈值输出 Wait/Render/RenderLate/Drop 决策；`NativeAudioOutput` 使用 AAudio 输出 interleaved S16 音频，并通过 AAudio timestamp 或提交帧数估算播放帧位置；`NativePlaybackSession` 的测试帧渲染前会走同步决策并在状态中输出 `sync` 和 `av_diff_us`。
+- 修改文件：`android/native/playback/playback_clock.h`、`android/native/playback/playback_clock.cpp`、`android/native/playback/native_audio_output.h`、`android/native/playback/native_audio_output.cpp`、`android/native/playback/native_playback_session.h`、`android/native/playback/native_playback_session.cpp`、`android/native/Android.mk`、`android/native/CMakeLists.txt`、`docs/AI_COLLABORATION.md`。
+- 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 成功；Gradle 显示 `compileDebugKotlin NO-SOURCE`；APK 输出为 `android/app/build/outputs/apk/debug/app-debug.apk`，大小 2208708 bytes。
+- 真机结果：尝试运行带 `-Install` 的自检脚本时，工具层审批因额度限制拒绝执行；未再次触达设备安装。上一轮设备侧阻塞仍为 `INSTALL_FAILED_USER_RESTRICTED`。
+- 依赖另一端：音频输出、主时钟和视频同步边界已准备好；真正 RTMP 原生播放仍缺 Android FFmpeg ABI 或等价 native 解封装/解码依赖。
+- 未修改内容：未修改 Linux 目录，未实现 Android 推流，未提交大型第三方二进制，未引入 Kotlin。
+
+### 2026-08-09 Android AI FFmpeg Cross-Compilation And Integration
+
+- 完成内容：
+  1. **FFmpeg for Android arm64-v8a 交叉编译成功**：在 Windows + Git Bash + NDK r28b 环境下，使用 `--disable-all` 最小化配置编译 FFmpeg 7.0.2，产出了 5 个 `.so` 动态库（libavcodec 1.8MB / libavformat 315KB / libavutil 658KB / libswresample 93KB / libswscale 682KB，strip 后总计 ~3.5MB）。启用组件：H.264/AAC 解码器、FLV/LiveFLV 解封装器、RTMP/TCP/File 协议。
+  2. **交叉编译指南文档**：新建 `docs/android-ffmpeg-cross-compile.md`，从交叉编译概念（Host/Target/Toolchain/Sysroot/ABI）讲起，到 NDK 工具链详解、FFmpeg configure 选项逐个解释、最终集成到 Android 项目的完整流程。
+  3. **构建脚本**：新建 `scripts/build-ffmpeg-android.sh`，一键完成下载→configure→make→.a→.so 链接。解决了多个 Windows 特有的交叉编译问题（TMPDIR 路径、Host C 编译器依赖 MSYS2、命令行长度超限导致链接/归档失败）。
+  4. **Android 工程集成**：`.so` 文件已放入 `android/native/libs/arm64-v8a/`；`Android.mk` 已添加 FFmpeg 预编译库声明和链接；`build.gradle` 已添加 `jniLibs.srcDirs`。
+- 修改文件：
+  - 新建：`docs/android-ffmpeg-cross-compile.md`、`scripts/build-ffmpeg-android.sh`、`scripts/android-cc.sh`、`scripts/android-cxx.sh`、`scripts/wrap-host-gcc.sh`、`scripts/android-ld.sh`、`android/native/libs/arm64-v8a/*.so`、`third_party/ffmpeg-android/arm64-v8a/lib/*.a`、`third_party/ffmpeg-android/arm64-v8a/lib/*.so`、`third_party/ffmpeg-android/arm64-v8a/include/**`
+  - 修改：`android/native/Android.mk`、`android/app/build.gradle`、`docs/AI_COLLABORATION.md`
+- 构建结果：
+  - FFmpeg `.so` 交叉编译成功，产物格式确认：ARM aarch64 ELF, Android 21, NDK r28b
+  - APK Gradle 构建尚未验证（本机缺少 Java/JDK，正在下载中）
+- 遇到的问题和解决方案：
+  1. FFmpeg configure 报 `mktemp` 路径错误 → 设置 `TMPDIR` 为 Unix 风格路径
+  2. Android clang 找不到 → 使用完整路径 `--cc=/path/to/clang`
+  3. "Host compiler lacks C11 support" → 发现本机有 MSYS2 的 gcc 15.2.0，需放在 PATH 最前面
+  4. MSYS2 PATH 污染交叉编译（sdl2-config 注入 `-mwindows`）→ 使用 `--pkg-config=false --disable-sdl2 --disable-{alsa,zlib,bzlib,lzma,iconv}`
+  5. 链接/归档步骤因 Windows `CreateProcess` 命令行长度限制（~32767 字符）失败 → 改用 `--disable-all` + 仅启用必需组件，大幅减少 .o 文件数量
+  6. 本机缺少 Java 无法运行 Gradle → 正在下载 Eclipse Temurin JDK 17
+- 风险：JDK 下载中，Gradle 构建尚未验证；后续需接入 FFmpeg C++ 播放管线
+- 下一步建议：
+  1. 安装 JDK，运行 `gradlew.bat :android:app:assembleDebug` 验证 APK 构建
+  2. 实现 FFmpeg 播放后端（RTMP 拉流→FLV 解封装→H.264/AAC 解码→渲染/音频输出）
+  3. 将 FFmpeg 管线接入 NativePlaybackSession
+- 是否需要用户确认：否（继续推进 Milestone 4）
+
+### 2026-08-09 Android AI Milestone 4 — FFmpeg Playback Backend Implementation
+
+- 完成内容：
+  1. **JDK 环境就绪**：使用 Android Studio JBR JDK 25；本机 JDK zip 下载不完整（79MB），改用已有 JBR 绕过。
+  2. **FFmpeg RAII 封装**：`android/native/playback/ffmpeg/ffmpeg_raii.h`，unique_ptr + 自定义 deleter 封装全部 FFmpeg 关键对象（AVFormatContext / AVCodecContext / AVFrame / AVPacket / SwsContext / SwrContext）。
+  3. **FFmpeg RTMP 拉流/解封装**：`ffmpeg_subscriber.h/.cpp`，封装 avformat_open_input + av_read_frame，输出公共 MediaPacket；自动查找音视频流并填充 StreamInfo（codec extradata、time_base→微秒转换）。
+  4. **FFmpeg H.264 视频解码器**：`ffmpeg_video_decoder.h/.cpp`，H.264 软件解码 + swscale YUV420P→RGBA 转换，输出公共 VideoFrame（RGBA 格式，可直接供 ANativeWindow 渲染）。
+  5. **FFmpeg AAC 音频解码器**：`ffmpeg_audio_decoder.h/.cpp`，AAC 软件解码 + swresample FLTP→S16 interleaved 转换，输出公共 AudioFrame（S16 格式，可直接供 AAudio 播放）。
+  6. **NativePlaybackSession 重写**：从测试图渲染重构为完整的 FFmpeg 播放管线：
+     - 3 线程架构：demux 线程（RTMP 拉流→packet 队列）+ video 线程（H.264 解码→AV 同步→ANativeWindow 渲染）+ audio 线程（AAC 解码→AAudio 输出→更新音频主时钟）
+     - 首帧 PTS 归一化、AV 同步决策（Wait/Render/RenderLate/Drop）、丢帧统计
+     - 状态机：Idle → Preparing → Running → Stopping → Stopped / Error
+     - 视频-only 模式自动回退到 wall clock（无需音频流）
+     - 资源清理（stop 时 abort 队列→join 线程→close 组件）
+  7. **APK 构建验证通过**：`gradlew.bat :android:app:assembleDebug --offline --no-daemon` BUILD SUCCESSFUL，零警告。APK 6.2MB，包含全部 6 个 .so（5 个 FFmpeg + 1 个 streambridge_android 206KB）。
+- 修改文件：
+  - 新建：`android/native/playback/ffmpeg/ffmpeg_raii.h`
+  - 新建：`android/native/playback/ffmpeg/ffmpeg_subscriber.h`、`ffmpeg_subscriber.cpp`
+  - 新建：`android/native/playback/ffmpeg/ffmpeg_video_decoder.h`、`ffmpeg_video_decoder.cpp`
+  - 新建：`android/native/playback/ffmpeg/ffmpeg_audio_decoder.h`、`ffmpeg_audio_decoder.cpp`
+  - 重写：`android/native/playback/native_playback_session.h`、`native_playback_session.cpp`
+  - 修改：`android/native/Android.mk`（新增 3 个 ffmpeg/*.cpp 源文件）
+  - 修改：`android/native/CMakeLists.txt`（新增源文件 + FFmpeg IMPORTED 库声明）
+- 构建结果：
+  - `./gradlew.bat :android:app:assembleDebug --offline --no-daemon` BUILD SUCCESSFUL，32s
+  - APK: `android/app/build/outputs/apk/debug/app-debug.apk` (6,191,857 bytes)
+  - libstreambridge_android.so: 205,896 bytes (arm64-v8a, stripped)
+  - FFmpeg .so: libavcodec 1.8MB + libavformat 315KB + libavutil 673KB + libswresample 95KB + libswscale 697KB
+  - 零编译警告（-Wall -Wextra -Werror）
+- 真机结果：未测试安装（上一轮设备侧阻塞 `INSTALL_FAILED_USER_RESTRICTED` 未解决）；代码层面已完成 Milestone 4 全部 C++ 实现。
+- 已知问题和限制：
+  - 视频解码器和渲染在同一个线程中，高分辨率下渲染可能阻塞解码（后续 M6 可拆分 frame queue）
+  - PlaybackClock 使用裸 int64_t 无显式同步（ARM64 对齐读写天然原子，但 TSAN 可能报警）
+  - AV 同步的 Wait 策略仅在 wait_us < 50ms 时 sleep，否则直接渲染（简化实现）
+  - sws_scale 使用 SWS_FAST_BILINEAR（速度优先，画质可后续优化为 SWS_BILINEAR）
+  - 音频输出未处理 AAudio underrun/XRUN 恢复（依赖 AAudio 内部缓冲）
+- 依赖另一端：
+  - Linux 推流端已就绪（ALSA + V4L2 → H.264 + AAC RTMP），两端可进行端到端联调
+  - 联调前需解决 Android 设备安装权限问题
+- 未修改内容：未修改 Linux 目录、common/ 公共头文件、Java/Kotlin 层
+- 下一步建议：
+  1. 解决 Android 设备安装权限（用户操作：允许 USB 安装/未知来源）
+  2. 端到端联调：Linux 推流 → SRS → Android 拉流播放（Milestone 5: 端到端联调）
+  3. 联调通过后进入 M5-M6：验证 AV 同步指标、长时间稳定性、重连和资源释放
+- 是否需要用户确认：否（Milestone 4 C++ 实现已完成，等待真机验证条件就绪）
 
 ## 10. Update Checklist
 

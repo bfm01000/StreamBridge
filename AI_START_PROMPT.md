@@ -28,7 +28,7 @@ RTMP 服务端计划使用 SRS。第一版允许使用 FFmpeg 完成 RTMP/FLV �
 - `docs/milestones.md`
 - `docs/AI_COLLABORATION.md`
 
-如确有必要，可以补充少量设计文档，但不要创建 `.cpp`、`.h`、Kotlin/Java 业务代码、Gradle 工程、CMake 实现或占位模块。
+如确有必要，可以补充少量设计文档，但不要创建 `.cpp`、`.h`、Java 业务代码、Gradle 工程、CMake 实现或占位模块。Android 端禁止使用 Kotlin。
 
 ## 双 AI 协作方式
 
@@ -157,7 +157,7 @@ SRS → Linux RTMP Subscribe → Demux → Decode → AV Sync → Output
 ### 5. Android Native 边界
 
 - Android 拉流、队列、解码、时钟和同步如何主要放在 C++？
-- Kotlin/Java 与 JNI 只负责哪些能力？
+- Android 端禁止 Kotlin。Java 与 JNI 只负责哪些能力？
 - Surface、Activity 生命周期、权限、Camera、AudioRecord、AAudio 和 MediaCodec 如何穿过平台边界？
 - 如何避免逐帧 JNI 复制和 JNI 生命周期错误？
 - 第一版软件解码视频选择 ANativeWindow 还是 OpenGL ES，请比较并推荐。
