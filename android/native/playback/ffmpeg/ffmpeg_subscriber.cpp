@@ -9,6 +9,46 @@ extern "C" {
 
 #include <cstring>
 
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <cerrno>
+
+namespace {
+
+// 保留为调试工具：测试原生 POSIX socket 连通性
+__attribute__((unused))
+static bool test_posix_connect(const char* host, int port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        __android_log_print(ANDROID_LOG_ERROR, "StreamBridgeSub",
+                "POSIX socket() failed: %s (%d)", strerror(errno), errno);
+        return false;
+    }
+    struct sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<uint16_t>(port));
+    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
+        __android_log_print(ANDROID_LOG_ERROR, "StreamBridgeSub",
+                "inet_pton failed: %s (%d)", strerror(errno), errno);
+        close(fd);
+        return false;
+    }
+    int ret = connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
+    close(fd);
+    if (ret < 0) {
+        __android_log_print(ANDROID_LOG_ERROR, "StreamBridgeSub",
+                "POSIX connect() failed: %s (%d)", strerror(errno), errno);
+        return false;
+    }
+    __android_log_print(ANDROID_LOG_INFO, "StreamBridgeSub",
+            "POSIX connect OK: %s:%d fd=%d", host, port, fd);
+    return true;
+}
+
+}  // namespace
+
 namespace streambridge::android::ffmpeg {
 namespace {
 
@@ -47,17 +87,12 @@ streambridge::Result<void> FFmpegSubscriber::open(const std::string& url) {
     }
 
     // 打开输入（RTMP URL）
-    av_log_set_level(AV_LOG_DEBUG);
-    // Android 上需要显式初始化网络（某些 FFmpeg 构建需要）
     avformat_network_init();
 
     AVFormatContext* ctx = nullptr;
-    AVDictionary* opts = nullptr;
-    av_dict_set(&opts, "timeout", "10000000", 0);          // 10s 超时
-    av_dict_set(&opts, "rtmp_live", "live", 0);            // 直播模式
-
-    int ret = avformat_open_input(&ctx, url.c_str(), nullptr, &opts);
-    av_dict_free(&opts);
+    // 不传任何选项：Android FFmpeg 最小化构建对选项敏感，
+    // timeout/rtmp_live 等选项可能导致内部 TCP 连接失败 (EADDRNOTAVAIL)
+    int ret = avformat_open_input(&ctx, url.c_str(), nullptr, nullptr);
     if (ret < 0 || ctx == nullptr) {
         char errbuf[256] = {};
         av_strerror(ret, errbuf, sizeof(errbuf));
@@ -103,6 +138,13 @@ streambridge::Result<void> FFmpegSubscriber::open(const std::string& url) {
             video_info_.time_base = {video_time_base_.num, video_time_base_.den};
             video_info_.bitrate_bps = par->bit_rate;
             fill_extradata(par, video_info_);
+
+            __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                    "video stream: codec=%d %dx%d fps=%.2f tb=%d/%d",
+                    static_cast<int>(par->codec_id),
+                    par->width, par->height,
+                    video_info_.frame_rate,
+                    video_time_base_.num, video_time_base_.den);
         } else if (par->codec_type == AVMEDIA_TYPE_AUDIO && audio_stream_index_ < 0) {
             audio_stream_index_ = static_cast<int>(i);
             audio_time_base_ = fmt_ctx_->streams[i]->time_base;
@@ -116,6 +158,12 @@ streambridge::Result<void> FFmpegSubscriber::open(const std::string& url) {
             audio_info_.time_base = {audio_time_base_.num, audio_time_base_.den};
             audio_info_.bitrate_bps = par->bit_rate;
             fill_extradata(par, audio_info_);
+
+            __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                    "audio stream: codec=%d %dHz %dch tb=%d/%d",
+                    static_cast<int>(par->codec_id),
+                    par->sample_rate, par->ch_layout.nb_channels,
+                    audio_time_base_.num, audio_time_base_.den);
         }
     }
 
@@ -168,6 +216,16 @@ streambridge::Result<streambridge::MediaPacket> FFmpegSubscriber::read_packet() 
     packet.sequence_number = packet_seq_++;
 
     if (pkt->stream_index == video_stream_index_) {
+        // PTS 诊断：前 5 个视频包打印原始 PTS
+        if (packet_seq_ <= 5) {
+            __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                    "video raw pkt#%lld pts=%lld dts=%lld tb=%d/%d key=%d",
+                    static_cast<long long>(packet_seq_),
+                    static_cast<long long>(pkt->pts),
+                    static_cast<long long>(pkt->dts),
+                    video_time_base_.num, video_time_base_.den,
+                    (pkt->flags & AV_PKT_FLAG_KEY) ? 1 : 0);
+        }
         packet.type = streambridge::MediaType::Video;
         packet.codec = video_info_.codec;
         packet.pts = streambridge::TimePointUs{ts_to_us(pkt->pts, video_time_base_)};
@@ -176,6 +234,15 @@ streambridge::Result<streambridge::MediaPacket> FFmpegSubscriber::read_packet() 
         packet.is_key_frame = (pkt->flags & AV_PKT_FLAG_KEY) != 0;
         packet.stream_index = video_stream_index_;
     } else if (pkt->stream_index == audio_stream_index_) {
+        // PTS 诊断：前 5 个音频包打印原始 PTS
+        if (packet_seq_ <= 5) {
+            __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                    "audio raw pkt#%lld pts=%lld dts=%lld tb=%d/%d",
+                    static_cast<long long>(packet_seq_),
+                    static_cast<long long>(pkt->pts),
+                    static_cast<long long>(pkt->dts),
+                    audio_time_base_.num, audio_time_base_.den);
+        }
         packet.type = streambridge::MediaType::Audio;
         packet.codec = audio_info_.codec;
         packet.pts = streambridge::TimePointUs{ts_to_us(pkt->pts, audio_time_base_)};

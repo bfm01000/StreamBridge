@@ -7,6 +7,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/mathematics.h>
 #include <libswscale/swscale.h>
 }
 
@@ -14,7 +15,9 @@ extern "C" {
 
 namespace streambridge::android::ffmpeg {
 namespace {
-// (internal helpers)
+
+static constexpr char kTag[] = "StreamBridgeVDec";
+
 }  // namespace
 
 FFmpegVideoDecoder::FFmpegVideoDecoder() = default;
@@ -33,7 +36,6 @@ streambridge::Result<void> FFmpegVideoDecoder::open(const streambridge::StreamIn
             "video codec is not H.264");
     }
 
-    // 查找 H.264 解码器
     const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_H264);
     if (codec == nullptr) {
         return streambridge::Result<void>::err(
@@ -50,27 +52,25 @@ streambridge::Result<void> FFmpegVideoDecoder::open(const streambridge::StreamIn
             "avcodec_alloc_context3 failed");
     }
 
-    // 设置 extradata（SPS/PPS）
     if (!info.codec_extradata.empty()) {
-        ctx->extradata = static_cast<uint8_t*>(av_mallocz(info.codec_extradata.size() + AV_INPUT_BUFFER_PADDING_SIZE));
+        ctx->extradata = static_cast<uint8_t*>(av_mallocz(
+            info.codec_extradata.size() + AV_INPUT_BUFFER_PADDING_SIZE));
         if (ctx->extradata == nullptr) {
             return streambridge::Result<void>::err(
                 streambridge::ErrorDomain::Resource,
                 streambridge::ErrorCode::OutOfMemory,
                 "failed to allocate extradata");
         }
-        std::memcpy(ctx->extradata, info.codec_extradata.data(), info.codec_extradata.size());
+        std::memcpy(ctx->extradata, info.codec_extradata.data(),
+                    info.codec_extradata.size());
         ctx->extradata_size = static_cast<int>(info.codec_extradata.size());
     }
 
     ctx->width = info.width;
     ctx->height = info.height;
     ctx->pix_fmt = AV_PIX_FMT_YUV420P;
-
-    // 设置时间基
     ctx->time_base = {info.time_base.num, info.time_base.den};
 
-    // 打开解码器
     int ret = avcodec_open2(ctx.get(), codec, nullptr);
     if (ret < 0) {
         char errbuf[256] = {};
@@ -82,25 +82,31 @@ streambridge::Result<void> FFmpegVideoDecoder::open(const streambridge::StreamIn
     }
 
     codec_ctx_ = ctx.release();
+    codec_tb_ = codec_ctx_->time_base;
     dst_width_ = info.width;
     dst_height_ = info.height;
     frame_index_ = 0;
+    pts_queue_.clear();
+
+    __android_log_print(ANDROID_LOG_INFO, kTag,
+            "decoder opened: %dx%d codec_tb=%d/%d",
+            dst_width_, dst_height_, codec_tb_.num, codec_tb_.den);
+
     return streambridge::Result<void>::ok();
 }
 
-streambridge::Result<FFmpegVideoDecoder::DecodeResult> FFmpegVideoDecoder::decode(
+streambridge::Result<void> FFmpegVideoDecoder::send_packet(
         const streambridge::MediaPacket& packet) {
     if (codec_ctx_ == nullptr) {
-        return streambridge::Result<DecodeResult>::err(
+        return streambridge::Result<void>::err(
             streambridge::ErrorDomain::Internal,
             streambridge::ErrorCode::InvalidState,
             "video decoder not opened");
     }
 
-    // 构建 AVPacket
     AVPacket* avpkt = av_packet_alloc();
     if (avpkt == nullptr) {
-        return streambridge::Result<DecodeResult>::err(
+        return streambridge::Result<void>::err(
             streambridge::ErrorDomain::Resource,
             streambridge::ErrorCode::OutOfMemory,
             "av_packet_alloc failed");
@@ -114,31 +120,40 @@ streambridge::Result<FFmpegVideoDecoder::DecodeResult> FFmpegVideoDecoder::decod
         avpkt->size = 0;
     }
 
+    // Push PTS to queue BEFORE sending (FIFO: first packet in = first frame out)
     if (packet.has_valid_pts()) {
-        avpkt->pts = packet.pts.us;
-    } else {
-        avpkt->pts = AV_NOPTS_VALUE;
-    }
-    if (packet.dts.us >= 0) {
-        avpkt->dts = packet.dts.us;
-    } else {
-        avpkt->dts = AV_NOPTS_VALUE;
+        pts_queue_.push_back(packet.pts.us);
     }
 
-    // 发送 packet
+    avpkt->pts = AV_NOPTS_VALUE;
+    avpkt->dts = AV_NOPTS_VALUE;
+
     int ret = avcodec_send_packet(codec_ctx_, avpkt);
     av_packet_free(&avpkt);
 
     if (ret < 0 && ret != AVERROR(EAGAIN)) {
+        // Send failed: undo the PTS push
+        if (!pts_queue_.empty()) pts_queue_.pop_back();
         char errbuf[256] = {};
         av_strerror(ret, errbuf, sizeof(errbuf));
-        return streambridge::Result<DecodeResult>::err(
+        return streambridge::Result<void>::err(
             streambridge::ErrorDomain::Codec,
             streambridge::ErrorCode::CodecDecodeFailed,
             std::string("avcodec_send_packet failed: ") + errbuf);
     }
 
-    // 接收帧
+    return streambridge::Result<void>::ok();
+}
+
+streambridge::Result<FFmpegVideoDecoder::DecodeResult>
+FFmpegVideoDecoder::receive_frame() {
+    if (codec_ctx_ == nullptr) {
+        return streambridge::Result<DecodeResult>::err(
+            streambridge::ErrorDomain::Internal,
+            streambridge::ErrorCode::InvalidState,
+            "video decoder not opened");
+    }
+
     auto av_frame = make_avframe();
     if (av_frame == nullptr) {
         return streambridge::Result<DecodeResult>::err(
@@ -147,7 +162,7 @@ streambridge::Result<FFmpegVideoDecoder::DecodeResult> FFmpegVideoDecoder::decod
             "av_frame_alloc failed");
     }
 
-    ret = avcodec_receive_frame(codec_ctx_, av_frame.get());
+    int ret = avcodec_receive_frame(codec_ctx_, av_frame.get());
     if (ret < 0) {
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
             DecodeResult result;
@@ -162,7 +177,26 @@ streambridge::Result<FFmpegVideoDecoder::DecodeResult> FFmpegVideoDecoder::decod
             std::string("avcodec_receive_frame failed: ") + errbuf);
     }
 
-    return frame_to_video_frame(av_frame.get());
+    // Pop PTS from FIFO queue
+    int64_t output_pts_us = -1;
+    if (!pts_queue_.empty()) {
+        output_pts_us = pts_queue_.front();
+        pts_queue_.pop_front();
+    }
+
+    return frame_to_video_frame(av_frame.get(), output_pts_us);
+}
+
+streambridge::Result<FFmpegVideoDecoder::DecodeResult> FFmpegVideoDecoder::decode(
+        const streambridge::MediaPacket& packet) {
+    auto send_result = send_packet(packet);
+    if (send_result.is_err()) {
+        return streambridge::Result<DecodeResult>::err(
+            send_result.error_domain(),
+            send_result.error_code(),
+            send_result.error_message());
+    }
+    return receive_frame();
 }
 
 streambridge::Result<FFmpegVideoDecoder::DecodeResult> FFmpegVideoDecoder::drain() {
@@ -172,7 +206,6 @@ streambridge::Result<FFmpegVideoDecoder::DecodeResult> FFmpegVideoDecoder::drain
         return streambridge::Result<DecodeResult>::ok(std::move(empty));
     }
 
-    // 发送 null packet 触发冲刷
     int ret = avcodec_send_packet(codec_ctx_, nullptr);
     if (ret < 0 && ret != AVERROR_EOF) {
         DecodeResult empty;
@@ -180,21 +213,7 @@ streambridge::Result<FFmpegVideoDecoder::DecodeResult> FFmpegVideoDecoder::drain
         return streambridge::Result<DecodeResult>::ok(std::move(empty));
     }
 
-    auto av_frame = make_avframe();
-    if (av_frame == nullptr) {
-        DecodeResult empty;
-        empty.has_frame = false;
-        return streambridge::Result<DecodeResult>::ok(std::move(empty));
-    }
-
-    ret = avcodec_receive_frame(codec_ctx_, av_frame.get());
-    if (ret < 0) {
-        DecodeResult empty;
-        empty.has_frame = false;
-        return streambridge::Result<DecodeResult>::ok(std::move(empty));
-    }
-
-    return frame_to_video_frame(av_frame.get());
+    return receive_frame();
 }
 
 void FFmpegVideoDecoder::close() {
@@ -207,10 +226,11 @@ void FFmpegVideoDecoder::close() {
         codec_ctx_ = nullptr;
     }
     frame_index_ = 0;
+    pts_queue_.clear();
 }
 
 streambridge::Result<FFmpegVideoDecoder::DecodeResult>
-FFmpegVideoDecoder::frame_to_video_frame(const AVFrame* av_frame) {
+FFmpegVideoDecoder::frame_to_video_frame(const AVFrame* av_frame, int64_t pts_us) {
     if (av_frame == nullptr) {
         DecodeResult empty;
         empty.has_frame = false;
@@ -229,7 +249,6 @@ FFmpegVideoDecoder::frame_to_video_frame(const AVFrame* av_frame) {
     const int dst_width = (dst_width_ > 0) ? dst_width_ : src_width;
     const int dst_height = (dst_height_ > 0) ? dst_height_ : src_height;
 
-    // 初始化或重建 sws 上下文（仅在尺寸或格式变化时）
     if (sws_ctx_ == nullptr ||
             sws_getCachedContext(sws_ctx_, src_width, src_height, src_fmt,
                                  dst_width, dst_height, AV_PIX_FMT_RGBA,
@@ -244,21 +263,18 @@ FFmpegVideoDecoder::frame_to_video_frame(const AVFrame* av_frame) {
             return streambridge::Result<DecodeResult>::err(
                 streambridge::ErrorDomain::Codec,
                 streambridge::ErrorCode::CodecFormatUnsupported,
-                "sws_getContext failed for YUV→RGBA");
+                "sws_getContext failed for YUV-RGBA");
         }
     }
 
-    // 分配输出 buffer
     const int kBytesPerPixel = 4;
     const int dst_stride = dst_width * kBytesPerPixel;
     const size_t buffer_size = static_cast<size_t>(dst_stride * dst_height);
     auto buffer = std::make_shared<streambridge::CpuFrameBuffer>(buffer_size);
 
-    // 设置目标平面
     uint8_t* dst_planes[4] = {buffer->data(), nullptr, nullptr, nullptr};
     int dst_strides[4] = {dst_stride, 0, 0, 0};
 
-    // 执行缩放和格式转换
     int result_height = sws_scale(sws_ctx_,
                                    av_frame->data, av_frame->linesize,
                                    0, src_height,
@@ -270,7 +286,6 @@ FFmpegVideoDecoder::frame_to_video_frame(const AVFrame* av_frame) {
             "sws_scale failed");
     }
 
-    // 构建 VideoFrame
     streambridge::VideoFrame frame;
     frame.format = streambridge::PixelFormat::RGBA;
     frame.width = dst_width;
@@ -283,12 +298,21 @@ FFmpegVideoDecoder::frame_to_video_frame(const AVFrame* av_frame) {
     frame.buffer = std::move(buffer);
     frame.frame_index = frame_index_++;
 
-    // PTS 从 AVFrame 获取
-    if (av_frame->pts != AV_NOPTS_VALUE) {
-        frame.pts = streambridge::TimePointUs{av_frame->pts};
+    if (pts_us >= 0) {
+        frame.pts = streambridge::TimePointUs{pts_us};
     }
+
     if (av_frame->duration > 0) {
-        frame.duration = streambridge::TimeDeltaUs{av_frame->duration};
+        frame.duration = streambridge::TimeDeltaUs{
+            av_rescale_q(av_frame->duration, codec_tb_, {1, 1'000'000})};
+    }
+
+    if (frame.frame_index < 5) {
+        __android_log_print(ANDROID_LOG_INFO, kTag,
+                "frame#%lld pts_us=%lld q_depth=%zu",
+                static_cast<long long>(frame.frame_index),
+                static_cast<long long>(frame.pts.us),
+                pts_queue_.size());
     }
 
     DecodeResult result;

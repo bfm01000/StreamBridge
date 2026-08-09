@@ -40,16 +40,16 @@ LOCAL_SRC_FILES := \
     playback/ffmpeg/ffmpeg_video_decoder.cpp \
     playback/ffmpeg/ffmpeg_audio_decoder.cpp \
     playback/native_audio_output.cpp \
-    playback/playback_clock.cpp \
     playback/native_playback_session.cpp \
-    playback/native_video_renderer.cpp
+    playback/native_video_renderer.cpp \
+    ../../common/src/av_sync.cpp
 
 LOCAL_C_INCLUDES := \
     $(LOCAL_PATH)/playback \
     $(LOCAL_PATH)/../../common/include \
     $(LOCAL_PATH)/../../third_party/ffmpeg-android/arm64-v8a/include
 
-LOCAL_CPPFLAGS := -std=c++17 -Wall -Wextra -Werror
+LOCAL_CPPFLAGS := -std=c++17 -Wall -Wextra -Werror -DSTREAMBRIDGE_BUILD_VERSION=\"2026-08-09-34\"
 LOCAL_LDLIBS := -laaudio -landroid -llog
 
 LOCAL_SHARED_LIBRARIES := avformat avcodec swscale swresample avutil

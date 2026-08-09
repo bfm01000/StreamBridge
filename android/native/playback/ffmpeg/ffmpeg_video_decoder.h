@@ -1,6 +1,8 @@
 #pragma once
-// FFmpeg H.264 视频解码器
-// 接收 MediaPacket，输出 RGBA VideoFrame（供 ANativeWindow 渲染）
+// FFmpeg H.264 video decoder
+// Receives MediaPacket, outputs RGBA VideoFrame (for ANativeWindow rendering)
+
+#include <deque>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -20,19 +22,24 @@ public:
     FFmpegVideoDecoder(const FFmpegVideoDecoder&) = delete;
     FFmpegVideoDecoder& operator=(const FFmpegVideoDecoder&) = delete;
 
-    // 用流信息初始化解码器
+    // Initialize decoder with stream info
     streambridge::Result<void> open(const streambridge::StreamInfo& info);
 
-    // 解码一个 packet，可产出 0 个或多个 VideoFrame
-    // frame 仅在返回 Ok 且 has_frame 为 true 时有效
-    // 调用方应循环调用直到 receive_frame 返回空
+    // Send one packet to decoder (pushes PTS to queue, calls avcodec_send_packet)
+    // Returns error if send fails. Does NOT receive frames.
+    streambridge::Result<void> send_packet(const streambridge::MediaPacket& packet);
+
+    // Receive one decoded frame (calls avcodec_receive_frame, pops PTS from queue)
     struct DecodeResult {
         bool has_frame = false;
         streambridge::VideoFrame frame;
     };
+    streambridge::Result<DecodeResult> receive_frame();
+
+    // Combined: send + receive (convenience, same as send_packet + receive_frame)
     streambridge::Result<DecodeResult> decode(const streambridge::MediaPacket& packet);
 
-    // 冲刷解码器（发送 null packet，取回缓冲帧）
+    // Flush decoder (send null packet, retrieve buffered frames)
     streambridge::Result<DecodeResult> drain();
 
     void close();
@@ -41,12 +48,17 @@ public:
 private:
     AVCodecContext* codec_ctx_ = nullptr;
     SwsContext* sws_ctx_ = nullptr;
+    AVRational codec_tb_{1, 1};  // cached decoder time_base for PTS conversion
     int dst_width_ = 0;
     int dst_height_ = 0;
     int64_t frame_index_ = 0;
 
-    // AVFrame → VideoFrame 转换（含 swscale YUV→RGBA）
-    streambridge::Result<DecodeResult> frame_to_video_frame(const AVFrame* av_frame);
+    // PTS queue: H.264 decoder buffers packets, so we track PTS per-packet
+    // and assign to output frames in order
+    std::deque<int64_t> pts_queue_;  // PTS values in microseconds
+
+    // AVFrame -> VideoFrame conversion (via swscale YUV->RGBA)
+    streambridge::Result<DecodeResult> frame_to_video_frame(const AVFrame* av_frame, int64_t pts_us);
 };
 
 }  // namespace streambridge::android::ffmpeg

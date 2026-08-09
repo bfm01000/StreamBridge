@@ -7,6 +7,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/mathematics.h>
 #include <libswresample/swresample.h>
 }
 
@@ -14,7 +15,9 @@ extern "C" {
 
 namespace streambridge::android::ffmpeg {
 namespace {
-// (internal helpers)
+
+static constexpr char kTag[] = "StreamBridgeADec";
+
 }  // namespace
 
 FFmpegAudioDecoder::FFmpegAudioDecoder() = default;
@@ -33,7 +36,6 @@ streambridge::Result<void> FFmpegAudioDecoder::open(const streambridge::StreamIn
             "audio codec is not AAC");
     }
 
-    // 查找 AAC 解码器
     const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_AAC);
     if (codec == nullptr) {
         return streambridge::Result<void>::err(
@@ -50,26 +52,29 @@ streambridge::Result<void> FFmpegAudioDecoder::open(const streambridge::StreamIn
             "avcodec_alloc_context3 failed");
     }
 
-    // 设置 extradata（AudioSpecificConfig）
     if (!info.codec_extradata.empty()) {
-        ctx->extradata = static_cast<uint8_t*>(av_mallocz(info.codec_extradata.size() + AV_INPUT_BUFFER_PADDING_SIZE));
+        ctx->extradata = static_cast<uint8_t*>(av_mallocz(
+            info.codec_extradata.size() + AV_INPUT_BUFFER_PADDING_SIZE));
         if (ctx->extradata == nullptr) {
             return streambridge::Result<void>::err(
                 streambridge::ErrorDomain::Resource,
                 streambridge::ErrorCode::OutOfMemory,
                 "failed to allocate extradata");
         }
-        std::memcpy(ctx->extradata, info.codec_extradata.data(), info.codec_extradata.size());
+        std::memcpy(ctx->extradata, info.codec_extradata.data(),
+                    info.codec_extradata.size());
         ctx->extradata_size = static_cast<int>(info.codec_extradata.size());
     }
 
     ctx->sample_rate = info.sample_rate;
-    AVChannelLayout stereo_layout = AV_CHANNEL_LAYOUT_STEREO;
-    av_channel_layout_copy(&ctx->ch_layout, &stereo_layout);
+    // Manual channel layout setup to avoid AV_CHANNEL_LAYOUT_STEREO compound literal
+    // compatibility issue with NDK clang
+    ctx->ch_layout.order = AV_CHANNEL_ORDER_NATIVE;
+    ctx->ch_layout.nb_channels = 2;
+    ctx->ch_layout.u.mask = AV_CH_LAYOUT_STEREO;
     ctx->sample_fmt = AV_SAMPLE_FMT_FLTP;
     ctx->time_base = {info.time_base.num, info.time_base.den};
 
-    // 打开解码器
     int ret = avcodec_open2(ctx.get(), codec, nullptr);
     if (ret < 0) {
         char errbuf[256] = {};
@@ -81,18 +86,30 @@ streambridge::Result<void> FFmpegAudioDecoder::open(const streambridge::StreamIn
     }
 
     codec_ctx_ = ctx.release();
-    dst_sample_rate_ = info.sample_rate;
-    dst_channels_ = info.channels;
+    codec_tb_ = codec_ctx_->time_base;
+    dst_sample_rate_ = codec_ctx_->sample_rate;
+    dst_channels_ = codec_ctx_->ch_layout.nb_channels;
     frame_index_ = 0;
+    pts_queue_.clear();
 
-    // 初始化重采样器（FLTP → S16 interleaved）
+    __android_log_print(ANDROID_LOG_INFO, kTag,
+            "decoder output: sample_rate=%d channels=%d sample_fmt=%d codec_tb=%d/%d",
+            codec_ctx_->sample_rate,
+            codec_ctx_->ch_layout.nb_channels,
+            codec_ctx_->sample_fmt,
+            codec_tb_.num, codec_tb_.den);
+
+    // Initialize resampler (decoder output format -> S16 interleaved)
     AVChannelLayout out_ch_layout;
-    AVChannelLayout stereo_layout2 = AV_CHANNEL_LAYOUT_STEREO;
-    av_channel_layout_copy(&out_ch_layout, &stereo_layout2);
+    memset(&out_ch_layout, 0, sizeof(out_ch_layout));
+    out_ch_layout.order = AV_CHANNEL_ORDER_NATIVE;
+    out_ch_layout.nb_channels = dst_channels_;
+    out_ch_layout.u.mask = (dst_channels_ == 2) ? AV_CH_LAYOUT_STEREO : AV_CH_LAYOUT_MONO;
 
     int ret_swr = swr_alloc_set_opts2(&swr_ctx_,
                                        &out_ch_layout, AV_SAMPLE_FMT_S16, dst_sample_rate_,
-                                       &ctx->ch_layout, ctx->sample_fmt, ctx->sample_rate,
+                                       &codec_ctx_->ch_layout, codec_ctx_->sample_fmt,
+                                       codec_ctx_->sample_rate,
                                        0, nullptr);
     if (ret_swr < 0 || swr_ctx_ == nullptr) {
         close();
@@ -114,19 +131,18 @@ streambridge::Result<void> FFmpegAudioDecoder::open(const streambridge::StreamIn
     return streambridge::Result<void>::ok();
 }
 
-streambridge::Result<FFmpegAudioDecoder::DecodeResult> FFmpegAudioDecoder::decode(
+streambridge::Result<void> FFmpegAudioDecoder::send_packet(
         const streambridge::MediaPacket& packet) {
-    if (codec_ctx_ == nullptr || swr_ctx_ == nullptr) {
-        return streambridge::Result<DecodeResult>::err(
+    if (codec_ctx_ == nullptr) {
+        return streambridge::Result<void>::err(
             streambridge::ErrorDomain::Internal,
             streambridge::ErrorCode::InvalidState,
             "audio decoder not opened");
     }
 
-    // 构建 AVPacket
     AVPacket* avpkt = av_packet_alloc();
     if (avpkt == nullptr) {
-        return streambridge::Result<DecodeResult>::err(
+        return streambridge::Result<void>::err(
             streambridge::ErrorDomain::Resource,
             streambridge::ErrorCode::OutOfMemory,
             "av_packet_alloc failed");
@@ -140,25 +156,39 @@ streambridge::Result<FFmpegAudioDecoder::DecodeResult> FFmpegAudioDecoder::decod
         avpkt->size = 0;
     }
 
+    // Push PTS to FIFO queue before sending
     if (packet.has_valid_pts()) {
-        avpkt->pts = packet.pts.us;
-    } else {
-        avpkt->pts = AV_NOPTS_VALUE;
+        pts_queue_.push_back(packet.pts.us);
     }
+
+    avpkt->pts = AV_NOPTS_VALUE;
+    avpkt->dts = AV_NOPTS_VALUE;
 
     int ret = avcodec_send_packet(codec_ctx_, avpkt);
     av_packet_free(&avpkt);
 
     if (ret < 0 && ret != AVERROR(EAGAIN)) {
+        if (!pts_queue_.empty()) pts_queue_.pop_back();
         char errbuf[256] = {};
         av_strerror(ret, errbuf, sizeof(errbuf));
-        return streambridge::Result<DecodeResult>::err(
+        return streambridge::Result<void>::err(
             streambridge::ErrorDomain::Codec,
             streambridge::ErrorCode::CodecDecodeFailed,
             std::string("avcodec_send_packet failed: ") + errbuf);
     }
 
-    // 接收帧
+    return streambridge::Result<void>::ok();
+}
+
+streambridge::Result<FFmpegAudioDecoder::DecodeResult>
+FFmpegAudioDecoder::receive_frame() {
+    if (codec_ctx_ == nullptr) {
+        return streambridge::Result<DecodeResult>::err(
+            streambridge::ErrorDomain::Internal,
+            streambridge::ErrorCode::InvalidState,
+            "audio decoder not opened");
+    }
+
     auto av_frame = make_avframe();
     if (av_frame == nullptr) {
         return streambridge::Result<DecodeResult>::err(
@@ -167,7 +197,7 @@ streambridge::Result<FFmpegAudioDecoder::DecodeResult> FFmpegAudioDecoder::decod
             "av_frame_alloc failed");
     }
 
-    ret = avcodec_receive_frame(codec_ctx_, av_frame.get());
+    int ret = avcodec_receive_frame(codec_ctx_, av_frame.get());
     if (ret < 0) {
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
             DecodeResult result;
@@ -182,7 +212,26 @@ streambridge::Result<FFmpegAudioDecoder::DecodeResult> FFmpegAudioDecoder::decod
             std::string("avcodec_receive_frame failed: ") + errbuf);
     }
 
-    return frame_to_audio_frame(av_frame.get());
+    // Pop PTS from FIFO queue
+    int64_t output_pts_us = -1;
+    if (!pts_queue_.empty()) {
+        output_pts_us = pts_queue_.front();
+        pts_queue_.pop_front();
+    }
+
+    return frame_to_audio_frame(av_frame.get(), output_pts_us);
+}
+
+streambridge::Result<FFmpegAudioDecoder::DecodeResult> FFmpegAudioDecoder::decode(
+        const streambridge::MediaPacket& packet) {
+    auto send_result = send_packet(packet);
+    if (send_result.is_err()) {
+        return streambridge::Result<DecodeResult>::err(
+            send_result.error_domain(),
+            send_result.error_code(),
+            send_result.error_message());
+    }
+    return receive_frame();
 }
 
 streambridge::Result<FFmpegAudioDecoder::DecodeResult> FFmpegAudioDecoder::drain() {
@@ -199,21 +248,7 @@ streambridge::Result<FFmpegAudioDecoder::DecodeResult> FFmpegAudioDecoder::drain
         return streambridge::Result<DecodeResult>::ok(std::move(empty));
     }
 
-    auto av_frame = make_avframe();
-    if (av_frame == nullptr) {
-        DecodeResult empty;
-        empty.has_frame = false;
-        return streambridge::Result<DecodeResult>::ok(std::move(empty));
-    }
-
-    ret = avcodec_receive_frame(codec_ctx_, av_frame.get());
-    if (ret < 0) {
-        DecodeResult empty;
-        empty.has_frame = false;
-        return streambridge::Result<DecodeResult>::ok(std::move(empty));
-    }
-
-    return frame_to_audio_frame(av_frame.get());
+    return receive_frame();
 }
 
 void FFmpegAudioDecoder::close() {
@@ -226,10 +261,11 @@ void FFmpegAudioDecoder::close() {
         codec_ctx_ = nullptr;
     }
     frame_index_ = 0;
+    pts_queue_.clear();
 }
 
 streambridge::Result<FFmpegAudioDecoder::DecodeResult>
-FFmpegAudioDecoder::frame_to_audio_frame(const AVFrame* av_frame) {
+FFmpegAudioDecoder::frame_to_audio_frame(const AVFrame* av_frame, int64_t pts_us) {
     if (av_frame == nullptr || swr_ctx_ == nullptr) {
         DecodeResult empty;
         empty.has_frame = false;
@@ -243,7 +279,6 @@ FFmpegAudioDecoder::frame_to_audio_frame(const AVFrame* av_frame) {
     }
 
     const int src_samples = av_frame->nb_samples;
-    // 计算目标样本数（可能有微小差异）
     const int dst_samples = swr_get_out_samples(swr_ctx_, src_samples);
     if (dst_samples <= 0) {
         return streambridge::Result<DecodeResult>::err(
@@ -252,17 +287,19 @@ FFmpegAudioDecoder::frame_to_audio_frame(const AVFrame* av_frame) {
             "swr_get_out_samples returned invalid value");
     }
 
-    // 分配输出 buffer（S16 interleaved: 2 bytes × channels × samples）
     const int dst_channels = (dst_channels_ > 0) ? dst_channels_ : av_frame->ch_layout.nb_channels;
     const size_t buffer_size = static_cast<size_t>(dst_samples * dst_channels * 2);
     auto buffer = std::make_shared<streambridge::CpuFrameBuffer>(buffer_size);
 
     uint8_t* out_data = buffer->data();
-    const uint8_t* const* in_data = const_cast<const uint8_t**>(av_frame->data);
+    // Build input plane array without const_cast UB
+    const uint8_t* in_planes[8] = {};
+    for (int i = 0; i < av_frame->ch_layout.nb_channels && i < 8; ++i) {
+        in_planes[i] = av_frame->data[i];
+    }
 
-    // 执行重采样
     int converted = swr_convert(swr_ctx_, &out_data, dst_samples,
-                                in_data, src_samples);
+                                in_planes, src_samples);
     if (converted < 0) {
         return streambridge::Result<DecodeResult>::err(
             streambridge::ErrorDomain::Codec,
@@ -270,7 +307,18 @@ FFmpegAudioDecoder::frame_to_audio_frame(const AVFrame* av_frame) {
             "swr_convert failed");
     }
 
-    // 构建 AudioFrame
+    // Diagnostic: every 50 frames
+    if (frame_index_ % 50 == 0) {
+        __android_log_print(ANDROID_LOG_INFO, kTag,
+                "frame#%lld: src_samples=%d converted=%d ch=%d "
+                "bytes[0..3]=%02x%02x%02x%02x pts_us=%lld q_depth=%zu",
+                static_cast<long long>(frame_index_),
+                src_samples, converted, dst_channels,
+                out_data[0], out_data[1], out_data[2], out_data[3],
+                static_cast<long long>(pts_us),
+                pts_queue_.size());
+    }
+
     streambridge::AudioFrame frame;
     frame.format = streambridge::SampleFormat::S16;
     frame.sample_rate = dst_sample_rate_;
@@ -279,17 +327,18 @@ FFmpegAudioDecoder::frame_to_audio_frame(const AVFrame* av_frame) {
     frame.num_planes = 1;
     frame.planes[0].data = buffer->data();
     frame.planes[0].size = buffer->size();
-    frame.planes[0].stride = dst_channels * 2;  // S16 interleaved stride
+    frame.planes[0].stride = dst_channels * 2;
     frame.planes[0].offset = 0;
     frame.buffer = std::move(buffer);
     frame.frame_index = frame_index_++;
 
-    // PTS
-    if (av_frame->pts != AV_NOPTS_VALUE) {
-        frame.pts = streambridge::TimePointUs{av_frame->pts};
+    // PTS from FIFO queue (already in microseconds)
+    if (pts_us >= 0) {
+        frame.pts = streambridge::TimePointUs{pts_us};
     }
     if (av_frame->duration > 0) {
-        frame.duration = streambridge::TimeDeltaUs{av_frame->duration};
+        frame.duration = streambridge::TimeDeltaUs{
+            av_rescale_q(av_frame->duration, codec_tb_, {1, 1'000'000})};
     } else {
         frame.duration = streambridge::TimeDeltaUs::from_samples(converted, dst_sample_rate_);
     }

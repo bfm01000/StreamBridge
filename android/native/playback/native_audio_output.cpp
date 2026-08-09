@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <string>
+#include <android/log.h>
 
 namespace streambridge::android {
 namespace {
@@ -34,7 +35,7 @@ streambridge::Result<void> NativeAudioOutput::open(int sample_rate, int channels
     }
 
     AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_OUTPUT);
-    AAudioStreamBuilder_setPerformanceMode(builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+    AAudioStreamBuilder_setPerformanceMode(builder, AAUDIO_PERFORMANCE_MODE_NONE);
     AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_SHARED);
     AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_I16);
     AAudioStreamBuilder_setSampleRate(builder, sample_rate);
@@ -56,6 +57,13 @@ streambridge::Result<void> NativeAudioOutput::open(int sample_rate, int channels
     sample_rate_ = AAudioStream_getSampleRate(stream_);
     channels_ = AAudioStream_getChannelCount(stream_);
     submitted_frames_ = 0;
+
+    __android_log_print(ANDROID_LOG_INFO, "StreamBridgeAOut",
+            "AAudio actual: rate=%d ch=%d buf_frames=%d burst=%d",
+            sample_rate_, channels_,
+            AAudioStream_getBufferSizeInFrames(stream_),
+            AAudioStream_getFramesPerBurst(stream_));
+
     return streambridge::Result<void>::ok();
 }
 
