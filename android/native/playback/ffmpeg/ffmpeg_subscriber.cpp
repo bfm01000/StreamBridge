@@ -4,6 +4,7 @@
 
 extern "C" {
 #include <libavformat/avformat.h>
+#include <libavutil/log.h>
 }
 
 #include <cstring>
@@ -46,17 +47,14 @@ streambridge::Result<void> FFmpegSubscriber::open(const std::string& url) {
     }
 
     // 打开输入（RTMP URL）
+    av_log_set_level(AV_LOG_DEBUG);
+    // Android 上需要显式初始化网络（某些 FFmpeg 构建需要）
+    avformat_network_init();
+
     AVFormatContext* ctx = nullptr;
     AVDictionary* opts = nullptr;
-    // RTMP 选项：强制 TCP 传输（避免 Android 上 HTTP tunnel 绑本地地址失败）
-    av_dict_set(&opts, "rtmp_transport", "tcp", 0);
-    av_dict_set(&opts, "rtmp_live", "live", 0);
-    // 网络超时
-    av_dict_set(&opts, "timeout", "10000000", 0);       // 10s 超时（微秒）
-    av_dict_set(&opts, "connect_timeout", "5000000", 0); // 5s 连接超时
-    av_dict_set(&opts, "rw_timeout", "10000000", 0);     // 读写超时
-    // 缓冲区（Android 网络栈建议小一点）
-    av_dict_set(&opts, "buffer_size", "524288", 0);      // 512KB
+    av_dict_set(&opts, "timeout", "10000000", 0);          // 10s 超时
+    av_dict_set(&opts, "rtmp_live", "live", 0);            // 直播模式
 
     int ret = avformat_open_input(&ctx, url.c_str(), nullptr, &opts);
     av_dict_free(&opts);

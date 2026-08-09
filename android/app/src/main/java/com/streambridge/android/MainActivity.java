@@ -1,6 +1,9 @@
 package com.streambridge.android;
 
 import android.app.Activity;
+import android.content.Context;
+import android.net.ConnectivityManager;
+import android.net.Network;
 import android.os.Bundle;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
@@ -124,6 +127,23 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         // RTMP 走 native FFmpeg 后端
         if (url.startsWith("rtmp://") || url.startsWith("rtmps://")) {
             setButtonsEnabled(false);
+
+            // Android 6.0+ 原生 POSIX socket 需要绑定到当前活跃网络（WiFi/蜂窝）
+            // 否则 connect() 会报 EADDRNOTAVAIL
+            try {
+                ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+                Network activeNetwork = cm.getActiveNetwork();
+                if (activeNetwork != null) {
+                    boolean bound = cm.bindProcessToNetwork(activeNetwork);
+                    android.util.Log.i("StreamBridgeUI", "bindProcessToNetwork: " + bound +
+                            " network=" + activeNetwork);
+                } else {
+                    android.util.Log.w("StreamBridgeUI", "No active network!");
+                }
+            } catch (Exception e) {
+                android.util.Log.e("StreamBridgeUI", "Network bind failed: " + e.getMessage());
+            }
+
             int result = nativeBridge.start(url, surfaceView.getHolder().getSurface());
             if (result == 0) {
                 onStatus("Native playback started: " + nativeBridge.status());
