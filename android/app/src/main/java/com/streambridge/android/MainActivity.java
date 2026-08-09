@@ -45,19 +45,19 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         buttons.setOrientation(LinearLayout.HORIZONTAL);
 
         startButton = new Button(this);
-        startButton.setText("Start");
+        startButton.setText("RTMP播放");
         startButton.setOnClickListener(view -> startPlayback());
         buttons.addView(startButton, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
 
         stopButton = new Button(this);
-        stopButton.setText("Stop");
+        stopButton.setText("停止");
         stopButton.setOnClickListener(view -> stopPlayback());
         buttons.addView(stopButton, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
 
         testPatternButton = new Button(this);
-        testPatternButton.setText("MP4/HTTP");
+        testPatternButton.setText("HTTP备选");
         testPatternButton.setOnClickListener(view -> renderNativeTestPattern());
         buttons.addView(testPatternButton, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
