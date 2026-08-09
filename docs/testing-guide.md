@@ -49,25 +49,23 @@ ss -tlnp | grep 1935
 ```bash
 cd ~/workspace/StreamBridge
 
+# 本地推流（loop 默认开启，无需 --loop）
 ./linux/build/app/streambridge_publisher \
   --rtmp-url rtmp://127.0.0.1:1935/live/test \
   --video-source '/home/bfm01000/下载/FRXXZ.mp4' \
   --enable-audio \
   --audio-source '/home/bfm01000/下载/FRXXZ.mp4' \
   --audio-backend file \
-  --loop \
   --log-level info
 
-// rtmp://192.168.31.57:1935/live/test
-
-./linux/build/app/streambridge_publisher \
-  --rtmp-url rtmp://192.168.31.57:1935/live/test \
-  --video-source '/home/bfm01000/下载/FRXXZ.mp4' \
-  --enable-audio \
-  --audio-source '/home/bfm01000/下载/FRXXZ.mp4' \
-  --audio-backend file \
-  --loop \
-  --log-level info
+# 如果手机和 Linux 在同一局域网，用 LAN IP 推流：
+# ./linux/build/app/streambridge_publisher \
+#   --rtmp-url rtmp://192.168.31.57:1935/live/test \
+#   --video-source '/home/bfm01000/下载/FRXXZ.mp4' \
+#   --enable-audio \
+#   --audio-source '/home/bfm01000/下载/FRXXZ.mp4' \
+#   --audio-backend file \
+#   --log-level info
 
 
 ```
@@ -89,7 +87,7 @@ timeout 10 ffmpeg -i rtmp://127.0.0.1:1935/live/test \
 ffprobe -v error -show_entries stream=codec_name,width,height,sample_rate,channels \
   rtmp://127.0.0.1:1935/live/test
 # 预期: codec_name=h264 width=1280 height=720
-#       codec_name=aac sample_rate=44100 channels=2
+#       codec_name=aac sample_rate=48000 channels=2
 ```
 
 ### A4. 停止
@@ -133,7 +131,6 @@ cd ~/workspace/StreamBridge
   --enable-audio \
   --audio-source '/home/bfm01000/下载/FRXXZ.mp4' \
   --audio-backend file \
-  --loop \
   --log-level info
 ```
 
@@ -202,7 +199,9 @@ ffprobe -v error -show_entries stream=codec_name,width,height \
 | `--enable-audio` | 启用音频 | false |
 | `--audio-source` | 音频源 | 同视频源 |
 | `--audio-backend` | `file` / `lavfi` / `alsa` | file |
-| `--loop` | 文件循环播放（模拟直播） | false |
+| `--loop` | 文件循环播放（模拟直播） | true（默认开启） |
+| `--no-loop` | 播完一次后停止 | — |
+| `--no-throttle` | 不限速全速推流（基准测试） | false |
 | `--video-bitrate` | 视频码率 bps | 2000000 |
 | `--video-width` / `--video-height` | 输出分辨率 | 1280 / 720 |
 | `--log-level` | `debug` / `info` / `warn` / `error` | info |
