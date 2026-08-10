@@ -22,7 +22,10 @@ MediaCodecVideoDecoder::~MediaCodecVideoDecoder() {
 // ============================================================
 
 Result<void> MediaCodecVideoDecoder::open(const StreamInfo& info) {
+    // Save surface before close() clears it
+    ANativeWindow* saved_surface = surface_;
     close();
+    surface_ = saved_surface;
 
     width_ = info.width;
     height_ = info.height;
@@ -98,6 +101,9 @@ Result<void> MediaCodecVideoDecoder::try_finish_configuration() {
                                csd.csd_1.data(), csd.csd_1.size());
     }
 
+    SB_LOG_I(kTag, "configure: surface=%p codec=%p",
+             static_cast<void*>(surface_), static_cast<void*>(codec_));
+
     media_status_t status = AMediaCodec_configure(
         codec_, format.get(), surface_, nullptr, 0);
     if (status != AMEDIA_OK) {
@@ -126,7 +132,7 @@ Result<void> MediaCodecVideoDecoder::try_finish_configuration() {
         // Simplified: pending_packets_ is concatenated raw Annex-B data, feed as one chunk
         AMediaCodecBufferInfo buf_info{};
         buf_info.size = pending_packets_.size();
-        auto idx = AMediaCodec_dequeueInputBuffer(codec_, 5000);
+        auto idx = AMediaCodec_dequeueInputBuffer(codec_, 50000);  // 50ms timeout
         if (idx >= 0) {
             size_t buf_size = 0;
             uint8_t* buf = AMediaCodec_getInputBuffer(codec_,
@@ -163,6 +169,7 @@ void MediaCodecVideoDecoder::close() {
 }
 
 Result<void> MediaCodecVideoDecoder::set_surface(ANativeWindow* window) {
+    SB_LOG_I(kTag, "set_surface: %p", static_cast<void*>(window));
     surface_ = window;
     if (codec_ != nullptr && started_) {
         return recreate(window);
@@ -237,8 +244,21 @@ Result<void> MediaCodecVideoDecoder::send_packet(const MediaPacket& packet) {
                                   "decoder not configured");
     }
 
-    auto idx = AMediaCodec_dequeueInputBuffer(codec_, 5000);
+    // Retry loop: MediaCodec input buffers may not be available immediately
+    // during startup or under high load
+    ssize_t idx = -1;
+    for (int retry = 0; retry < 10; ++retry) {
+        idx = AMediaCodec_dequeueInputBuffer(codec_, 5000);  // 5ms per attempt
+        if (idx >= 0) break;
+        if (retry == 0) {
+            SB_LOG_D(kTag, "input buffer not ready, retrying...");
+        }
+    }
     if (idx < 0) {
+        static int drop_count = 0;
+        if (++drop_count % 100 == 1) {
+            SB_LOG_W(kTag, "dropped %d packets (input buffer timeout)", drop_count);
+        }
         return Result<void>::ok();
     }
 
@@ -342,7 +362,7 @@ Result<void> MediaCodecVideoDecoder::drain() {
     if (codec_ == nullptr || !started_ || saw_eos_) {
         return Result<void>::ok();
     }
-    auto idx = AMediaCodec_dequeueInputBuffer(codec_, 5000);
+    auto idx = AMediaCodec_dequeueInputBuffer(codec_, 50000);  // 50ms timeout
     if (idx < 0) return Result<void>::ok();
     size_t buf_size = 0;
     uint8_t* buf = AMediaCodec_getInputBuffer(codec_, static_cast<size_t>(idx), &buf_size);

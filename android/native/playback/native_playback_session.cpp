@@ -118,8 +118,8 @@ void NativePlaybackSession::stop() {
     if (audio_thread_.joinable()) audio_thread_.join();
 
     subscriber_.close();
-    video_decoder_->close();
-    audio_decoder_->close();
+    if (video_decoder_) video_decoder_->close();
+    if (audio_decoder_) audio_decoder_->close();
     audio_output_.close();
     clock_.reset();
 
@@ -401,6 +401,8 @@ void NativePlaybackSession::video_loop() {
     log_info("video decoder opened, entering decode loop");
 
     // Main decode loop: send each packet ONCE, receive all ready frames
+    int pkt_fed = 0;
+    int frame_out = 0;
     while (!is_stopping()) {
         streambridge::MediaPacket packet;
         auto pop_result = video_packet_queue_.pop(
@@ -415,6 +417,10 @@ void NativePlaybackSession::video_loop() {
             set_error(send_result.error_message());
             return;
         }
+        if (++pkt_fed <= 5 || pkt_fed % 100 == 0) {
+            SB_LOG_I(kLogTag, "video: fed pkt#%d pts=%lld size=%zu",
+                     pkt_fed, static_cast<long long>(packet.pts.us), packet.data.size());
+        }
 
         // Dequeue decoded output (frame cached inside decoder)
         while (!is_stopping()) {
@@ -426,27 +432,48 @@ void NativePlaybackSession::video_loop() {
             }
             if (!dec_result->has_output) break;  // no frame ready
 
-            // CPU mode: retrieve frame data
-            auto frame_result = video_decoder_->receive_frame(dec_result->output_index);
-            if (frame_result.is_err()) {
-                set_error(frame_result.error_message());
-                return;
-            }
-            if (!frame_result->has_frame) {
-                video_decoder_->release_output(dec_result->output_index, false);
-                continue;
+            if (++frame_out <= 5 || frame_out % 100 == 0) {
+                SB_LOG_I(kLogTag, "video: out frame#%d pts=%lld mode=%s",
+                         frame_out, static_cast<long long>(dec_result->pts_us),
+                         (video_decoder_->output_mode()
+                          == streambridge::IVideoDecoder::OutputMode::Surface)
+                         ? "Surface" : "CpuFrame");
             }
 
-            auto& frame = frame_result->frame;
+            bool is_surface_mode = (video_decoder_->output_mode()
+                == streambridge::IVideoDecoder::OutputMode::Surface);
 
-            // Normalize PTS to first frame
-            if (first_video_pts_us_ >= 0 && frame.pts.us > 0) {
-                frame.pts.us -= first_video_pts_us_;
+            int64_t frame_pts_us = 0;
+
+            if (is_surface_mode) {
+                // Surface mode: PTS comes from dequeue_output, no CPU frame
+                frame_pts_us = dec_result->pts_us;
+                // Normalize PTS
+                if (first_video_pts_us_ >= 0 && frame_pts_us > 0) {
+                    frame_pts_us -= first_video_pts_us_;
+                }
+            } else {
+                // CPU mode: retrieve frame data
+                auto frame_result = video_decoder_->receive_frame(dec_result->output_index);
+                if (frame_result.is_err()) {
+                    set_error(frame_result.error_message());
+                    return;
+                }
+                if (!frame_result->has_frame) {
+                    video_decoder_->release_output(dec_result->output_index, false);
+                    continue;
+                }
+                frame_pts_us = frame_result->frame.pts.us;
+                // Normalize PTS
+                if (first_video_pts_us_ >= 0 && frame_result->frame.pts.us > 0) {
+                    frame_pts_us = frame_result->frame.pts.us - first_video_pts_us_;
+                }
             }
 
             // AV sync: audio master clock -> video sync
             auto master_clock = clock_.now();
-            auto sync = sync_controller_.decide(frame.pts, master_clock);
+            auto sync = sync_controller_.decide(
+                streambridge::TimePointUs{frame_pts_us}, master_clock);
 
             {
                 std::lock_guard<std::mutex> lock(mutex_);
@@ -462,10 +489,11 @@ void NativePlaybackSession::video_loop() {
             }
 
             if (sync.action == streambridge::VideoSyncAction::Wait) {
-                int64_t sleep_us = std::min(sync.wait_us, kPacketPopTimeoutMs * 1000L);
+                int64_t sleep_us = sync.wait_us;  // wait full duration (clock catches up naturally)
                 std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
                 master_clock = clock_.now();
-                sync = sync_controller_.decide(frame.pts, master_clock);
+                sync = sync_controller_.decide(
+                    streambridge::TimePointUs{frame_pts_us}, master_clock);
                 if (sync.action == streambridge::VideoSyncAction::Drop) {
                     std::lock_guard<std::mutex> lock(mutex_);
                     ++video_frames_dropped_;
@@ -480,44 +508,54 @@ void NativePlaybackSession::video_loop() {
             }
             if (is_stopping()) break;
 
-            // Render
-            auto render_result = renderer_.render(frame);
-            if (video_frames_rendered_ == 0) {
-                SB_LOG_I(kLogTag,
-                        "video: first frame rendered %dx%d fmt=%d pts=%lld",
-                        frame.width, frame.height,
-                        static_cast<int>(frame.format),
-                        static_cast<long long>(frame.pts.us));
+            // Render (CPU mode: ANativeWindow; Surface mode: MediaCodec release)
+            if (is_surface_mode) {
+                // Surface mode: release buffer to render on Surface
+                video_decoder_->release_output(dec_result->output_index, true);
+                std::lock_guard<std::mutex> lock(mutex_);
+                ++video_frames_rendered_;
+            } else {
+                // CPU mode: get frame from receive_frame result
+                auto frame_result2 = video_decoder_->receive_frame(dec_result->output_index);
+                if (frame_result2.is_ok() && frame_result2->has_frame) {
+                    auto& frame = frame_result2->frame;
+                    auto render_result = renderer_.render(frame);
+                    if (video_frames_rendered_ == 0) {
+                        SB_LOG_I(kLogTag,
+                                "video: first frame rendered %dx%d fmt=%d pts=%lld",
+                                frame.width, frame.height,
+                                static_cast<int>(frame.format),
+                                static_cast<long long>(frame_pts_us));
+                    }
+                    if (render_result.is_err()) {
+                        SB_LOG_W(kLogTag, "render failed: %s",
+                                         render_result.error_message().c_str());
+                    } else {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        ++video_frames_rendered_;
+                    }
+                }
+                video_decoder_->release_output(dec_result->output_index, false);
             }
+
             if (video_frames_rendered_ % 100 == 0) {
                 SB_LOG_I(kLogTag,
                         "video: frame=%lld pts=%lld av=%lld q=%zu",
                         static_cast<long long>(video_frames_rendered_),
-                        static_cast<long long>(frame.pts.us),
+                        static_cast<long long>(frame_pts_us),
                         static_cast<long long>(sync.av_diff_us),
                         video_packet_queue_.size());
             }
-            if (render_result.is_err()) {
-                SB_LOG_W(kLogTag,
-                                    "render failed: %s",
-                                    render_result.error_message().c_str());
-            } else {
-                std::lock_guard<std::mutex> lock(mutex_);
-                ++video_frames_rendered_;
-            }
-
-            // Release frame (CPU mode: no-op; Surface mode: render to Surface)
-            video_decoder_->release_output(dec_result->output_index, false);
 
             // Periodic stability log (every ~5s of media time)
             {
                 static int64_t last_log_pts_us = 0;
-                if (frame.pts.us - last_log_pts_us >= 5'000'000) {
-                    last_log_pts_us = frame.pts.us;
+                if (frame_pts_us - last_log_pts_us >= 5'000'000) {
+                    last_log_pts_us = frame_pts_us;
                     SB_LOG_I(kLogTag,
                             "stability: pts=%lld rendered=%lld dropped=%lld "
                             "vq=%zu aq=%zu av=%lld state=%s",
-                            static_cast<long long>(frame.pts.us),
+                            static_cast<long long>(frame_pts_us),
                             static_cast<long long>(video_frames_rendered_),
                             static_cast<long long>(video_frames_dropped_),
                             video_packet_queue_.size(),
@@ -633,7 +671,7 @@ void NativePlaybackSession::audio_loop() {
             }
 
             clock_.update_audio(
-                streambridge::TimePointUs{local_first_audio_pts >= 0 ? local_first_audio_pts : 0},
+                streambridge::TimePointUs{0},  // anchor at 0 (all PTS normalized)
                 audio_output_.played_frames(),
                 audio_info_copy.sample_rate);
         }

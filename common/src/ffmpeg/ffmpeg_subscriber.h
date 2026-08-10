@@ -8,7 +8,6 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
-#include <libavcodec/bsf.h>
 }
 
 #include "streambridge/media_errors.h"
@@ -62,10 +61,8 @@ private:
 
     int64_t packet_seq_ = 0;
 
-    // Bitstream filter: length-prefixed (avcC/hvcC) → Annex-B for MediaCodec
-    AVBSFContext* video_bsf_ctx_ = nullptr;
-    bool need_bsf_ = false;
-    Result<streambridge::MediaPacket> apply_bsf(const streambridge::MediaPacket& input);
+    // True when container uses length-prefixed NALs (avcC/hvcC) → need Annex-B conversion
+    bool need_annexb_conversion_ = false;
 
     // 内部方法：从 FFmpeg codec_id 映射到公共 CodecId
     static streambridge::CodecId map_codec_id(AVCodecID id);
