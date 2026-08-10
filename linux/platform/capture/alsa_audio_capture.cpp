@@ -67,7 +67,7 @@ Result<void> ALSAAudioCapture::open(const AudioCaptureConfig& config) {
     unsigned int rate_orig = rate;
     snd_pcm_hw_params_set_rate_near(pcm_, hw_params, &rate, nullptr);
     if (rate != rate_orig) {
-        LOG_W("alsa", "sample rate adjusted: %u -> %u Hz", rate_orig, rate);
+        SB_LOG_W("alsa", "sample rate adjusted: %u -> %u Hz", rate_orig, rate);
     }
 
     // 声道数
@@ -106,7 +106,7 @@ Result<void> ALSAAudioCapture::open(const AudioCaptureConfig& config) {
     config_.target_format = SampleFormat::S16;     // ALSA 输出 S16
     config_.target_frame_size = static_cast<int>(period_size);
 
-    LOG_I("alsa", "opened %s: %u Hz, %u ch, S16_LE, "
+    SB_LOG_I("alsa", "opened %s: %u Hz, %u ch, S16_LE, "
           "period=%lu frames, buffer=%lu frames",
           device, rate, channels, period_size, buffer_size);
 
@@ -182,7 +182,7 @@ void ALSAAudioCapture::capture_loop() {
     std::vector<uint8_t> buffer(buf_bytes);
     int64_t frame_idx = 0;
 
-    LOG_I("alsa", "capture loop started: period=%lu frames, buf=%d bytes",
+    SB_LOG_I("alsa", "capture loop started: period=%lu frames, buf=%d bytes",
           period_size, buf_bytes);
 
     while (!stop_requested_) {
@@ -194,7 +194,7 @@ void ALSAAudioCapture::capture_loop() {
         }
         if (err == -EPIPE) {
             // XRUN (overrun): 恢复并继续
-            LOG_W("alsa", "XRUN (overrun), recovering...");
+            SB_LOG_W("alsa", "XRUN (overrun), recovering...");
             snd_pcm_recover(pcm_, err, 1);
             continue;
         }
@@ -209,7 +209,7 @@ void ALSAAudioCapture::capture_loop() {
             continue;
         }
         if (err < 0) {
-            LOG_E("alsa", "snd_pcm_readi error: %s", snd_strerror(err));
+            SB_LOG_E("alsa", "snd_pcm_readi error: %s", snd_strerror(err));
             on_error_(ErrorDomain::Device, ErrorCode::DeviceDisconnected,
                       std::string("snd_pcm_readi: ") + snd_strerror(err));
             break;
@@ -241,7 +241,7 @@ void ALSAAudioCapture::capture_loop() {
 
     // 停止时排空 ALSA 缓冲
     snd_pcm_drain(pcm_);
-    LOG_I("alsa", "capture loop exiting, total frames=%ld", frame_idx);
+    SB_LOG_I("alsa", "capture loop exiting, total frames=%ld", frame_idx);
 }
 
 }  // namespace streambridge

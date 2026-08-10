@@ -150,4 +150,19 @@ inline SampleFormat from_av_sample_format(AVSampleFormat fmt) {
     }
 }
 
+// ============================================================
+// Frame conversion (implemented in common/src/ffmpeg_utils.cpp)
+// ============================================================
+
+VideoFrame avframe_to_videoframe(const AVFrame* avf, AVRational tb);
+AVFrame*  videoframe_to_avframe(const VideoFrame& vf);
+AudioFrame avframe_to_audioframe(const AVFrame* avf, AVRational tb);
+
+// ============================================================
+// Error helpers
+// ============================================================
+
+ErrorCode ffmpeg_error_to_error_code(int averr);
+Result<void> check_ffmpeg(int ret, const char* context);
+
 }  // namespace streambridge

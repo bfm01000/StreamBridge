@@ -41,8 +41,8 @@ int main(int argc, char* argv[]) {
     else if (app_cfg.log_level_str == "error") set_log_level(LogLevel::Error);
     else set_log_level(LogLevel::Info);
 
-    LOG_I("main", "StreamBridge Publisher starting (M3)");
-    LOG_I("main", "rtmp-url=%s video=%s %dx%d@%dfps bitrate=%d audio=%s",
+    SB_LOG_I("main", "StreamBridge Publisher starting (M3)");
+    SB_LOG_I("main", "rtmp-url=%s video=%s %dx%d@%dfps bitrate=%d audio=%s",
           app_cfg.rtmp_url.c_str(), app_cfg.video_source.c_str(),
           app_cfg.video_width, app_cfg.video_height, app_cfg.video_fps,
           app_cfg.video_bitrate,
@@ -52,9 +52,9 @@ int main(int argc, char* argv[]) {
     std::unique_ptr<IVideoCapture> video_cap;
     if (app_cfg.video_backend == "v4l2") {
         video_cap = std::make_unique<V4L2VideoCapture>();
-        LOG_I("main", "using V4L2 video backend");
+        SB_LOG_I("main", "using V4L2 video backend");
     } else {
-        LOG_I("main", "using FFmpeg video backend");
+        SB_LOG_I("main", "using FFmpeg video backend");
         video_cap = std::make_unique<FFmpegVideoCapture>();
     }
     auto video_enc = std::make_unique<FFmpegVideoEncoder>();
@@ -66,9 +66,9 @@ int main(int argc, char* argv[]) {
         if (app_cfg.audio_backend == "alsa") {
 #ifdef STREAMBRIDGE_HAS_ALSA
             audio_cap = std::make_unique<ALSAAudioCapture>();
-            LOG_I("main", "using ALSA audio backend");
+            SB_LOG_I("main", "using ALSA audio backend");
 #else
-            LOG_W("main", "ALSA not compiled in, falling back to FFmpeg/lavfi");
+            SB_LOG_W("main", "ALSA not compiled in, falling back to FFmpeg/lavfi");
             audio_cap = std::make_unique<FFmpegAudioCapture>();
 #endif
         } else {
@@ -87,10 +87,10 @@ int main(int argc, char* argv[]) {
     auto session_cfg = app_cfg.to_session_config();
     auto ret = session.prepare(session_cfg);
     if (ret.is_err()) {
-        LOG_E("main", "prepare failed: %s", ret.to_string().c_str());
+        SB_LOG_E("main", "prepare failed: %s", ret.to_string().c_str());
         return 1;
     }
-    LOG_I("main", "prepared OK (audio=%s)",
+    SB_LOG_I("main", "prepared OK (audio=%s)",
           app_cfg.enable_audio ? "enabled" : "disabled");
 
     // 5. 信号处理
@@ -100,10 +100,10 @@ int main(int argc, char* argv[]) {
     // 6. 启动
     ret = session.start();
     if (ret.is_err()) {
-        LOG_E("main", "start failed: %s", ret.to_string().c_str());
+        SB_LOG_E("main", "start failed: %s", ret.to_string().c_str());
         return 1;
     }
-    LOG_I("main", "running — press Ctrl+C to stop");
+    SB_LOG_I("main", "running — press Ctrl+C to stop");
 
     // 7. 主循环：定期打印指标
     auto start_time = std::chrono::steady_clock::now();
@@ -114,7 +114,7 @@ int main(int argc, char* argv[]) {
         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now() - start_time).count();
 
-        LOG_I("main", "uptime=%lds cap=%ld enc=%ld sent=%ld "
+        SB_LOG_I("main", "uptime=%lds cap=%ld enc=%ld sent=%ld "
               "drop=%ld q_raw_v=%zu q_raw_a=%zu q_pkt_v=%zu q_pkt_a=%zu bytes=%ld",
               elapsed, m.frames_captured, m.frames_encoded,
               m.packets_sent, m.frames_dropped,
@@ -123,14 +123,14 @@ int main(int argc, char* argv[]) {
               m.bytes_sent);
 
         if (session.state() == SessionState::Error) {
-            LOG_E("main", "session error, exiting");
+            SB_LOG_E("main", "session error, exiting");
             break;
         }
     }
 
     // 8. 停止
-    LOG_I("main", "stopping...");
+    SB_LOG_I("main", "stopping...");
     session.stop();
-    LOG_I("main", "exiting");
+    SB_LOG_I("main", "exiting");
     return 0;
 }

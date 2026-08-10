@@ -53,10 +53,10 @@ Result<void> V4L2VideoCapture::open(const VideoCaptureConfig& config) {
     }
     if (!(cap.capabilities & V4L2_CAP_STREAMING)) {
         // 尝试 read() 模式（更简单，兼容性更好）
-        LOG_W("v4l2", "%s does not support streaming, using read() mode", device);
+        SB_LOG_W("v4l2", "%s does not support streaming, using read() mode", device);
     }
 
-    LOG_I("v4l2", "opened %s: driver=%s card=%s bus=%s",
+    SB_LOG_I("v4l2", "opened %s: driver=%s card=%s bus=%s",
           device, cap.driver, cap.card, cap.bus_info);
 
     // 3. 枚举格式，优先 MJPG（720p@30），其次 YUYV
@@ -84,7 +84,7 @@ Result<void> V4L2VideoCapture::open(const VideoCaptureConfig& config) {
             if (init_decoder(V4L2_PIX_FMT_MJPEG).is_ok()) {
                 src_pix_fmt_ = PixelFormat::Unknown;  // sentinel: MJPEG decode mode
                 format_set = true;
-                LOG_I("v4l2", "format: MJPG %ux%u (MJPEG→YUV420P)",
+                SB_LOG_I("v4l2", "format: MJPG %ux%u (MJPEG→YUV420P)",
                       fmt.fmt.pix.width, fmt.fmt.pix.height);
             }
         }
@@ -96,7 +96,7 @@ Result<void> V4L2VideoCapture::open(const VideoCaptureConfig& config) {
         if (ioctl(fd_, VIDIOC_S_FMT, &fmt) == 0) {
             src_pix_fmt_ = PixelFormat::YUYV422;
             format_set = true;
-            LOG_I("v4l2", "format: YUYV %ux%u", fmt.fmt.pix.width, fmt.fmt.pix.height);
+            SB_LOG_I("v4l2", "format: YUYV %ux%u", fmt.fmt.pix.width, fmt.fmt.pix.height);
         }
     }
 
@@ -112,7 +112,7 @@ Result<void> V4L2VideoCapture::open(const VideoCaptureConfig& config) {
                 format_set = true;
             }
             if (format_set) {
-                LOG_W("v4l2", "using fallback format: %c%c%c%c %ux%u",
+                SB_LOG_W("v4l2", "using fallback format: %c%c%c%c %ux%u",
                       (char)(pf & 0xFF), (char)((pf >> 8) & 0xFF),
                       (char)((pf >> 16) & 0xFF), (char)((pf >> 24) & 0xFF),
                       fmt.fmt.pix.width, fmt.fmt.pix.height);
@@ -137,7 +137,7 @@ Result<void> V4L2VideoCapture::open(const VideoCaptureConfig& config) {
     if (ioctl(fd_, VIDIOC_S_PARM, &parm) == 0) {
         target_fps_ = static_cast<int>(parm.parm.capture.timeperframe.denominator
                                        / parm.parm.capture.timeperframe.numerator);
-        LOG_I("v4l2", "frame rate: %d fps", target_fps_);
+        SB_LOG_I("v4l2", "frame rate: %d fps", target_fps_);
     } else {
         target_fps_ = config.target_fps;
     }
@@ -198,12 +198,12 @@ bool V4L2VideoCapture::init_mmap() {
     req.count = 4;  // 4 个缓冲足够
 
     if (ioctl(fd_, VIDIOC_REQBUFS, &req) < 0) {
-        LOG_E("v4l2", "VIDIOC_REQBUFS failed: %s", strerror(errno));
+        SB_LOG_E("v4l2", "VIDIOC_REQBUFS failed: %s", strerror(errno));
         return false;
     }
 
     if (req.count < 2) {
-        LOG_E("v4l2", "insufficient buffers: %u", req.count);
+        SB_LOG_E("v4l2", "insufficient buffers: %u", req.count);
         return false;
     }
 
@@ -215,7 +215,7 @@ bool V4L2VideoCapture::init_mmap() {
         buf.index = i;
 
         if (ioctl(fd_, VIDIOC_QUERYBUF, &buf) < 0) {
-            LOG_E("v4l2", "VIDIOC_QUERYBUF[%u] failed: %s", i, strerror(errno));
+            SB_LOG_E("v4l2", "VIDIOC_QUERYBUF[%u] failed: %s", i, strerror(errno));
             return false;
         }
 
@@ -223,7 +223,7 @@ bool V4L2VideoCapture::init_mmap() {
         buffers_[i].start = mmap(nullptr, buf.length, PROT_READ | PROT_WRITE,
                                   MAP_SHARED, fd_, buf.m.offset);
         if (buffers_[i].start == MAP_FAILED) {
-            LOG_E("v4l2", "mmap[%u] failed: %s", i, strerror(errno));
+            SB_LOG_E("v4l2", "mmap[%u] failed: %s", i, strerror(errno));
             return false;
         }
     }
@@ -322,7 +322,7 @@ VideoCaptureConfig V4L2VideoCapture::current_config() const {
 // ============================================================
 
 void V4L2VideoCapture::capture_loop() {
-    LOG_I("v4l2", "capture loop started");
+    SB_LOG_I("v4l2", "capture loop started");
     int64_t frame_idx = 0;
     auto frame_duration_us = TimeDeltaUs::from_frames(1, target_fps_);
 
@@ -441,7 +441,7 @@ void V4L2VideoCapture::capture_loop() {
 
         // 重新入队缓冲
         if (ioctl(fd_, VIDIOC_QBUF, &buf) < 0) {
-            LOG_E("v4l2", "VIDIOC_QBUF failed: %s", strerror(errno));
+            SB_LOG_E("v4l2", "VIDIOC_QBUF failed: %s", strerror(errno));
             break;
         }
 
@@ -454,7 +454,7 @@ void V4L2VideoCapture::capture_loop() {
         }
     }
 
-    LOG_I("v4l2", "capture loop exiting, total frames=%ld", frame_idx);
+    SB_LOG_I("v4l2", "capture loop exiting, total frames=%ld", frame_idx);
 }
 
 }  // namespace streambridge

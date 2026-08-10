@@ -2,26 +2,11 @@
 // M3: 支持视频+音频推流
 
 #include "streambridge/session.h"
-#include "logger.h"
+#include "streambridge/logging.h"
 #include <chrono>
 #include <thread>
 
 namespace streambridge {
-
-const char* session_state_name(SessionState state) {
-    switch (state) {
-        case SessionState::Idle:      return "Idle";
-        case SessionState::Preparing: return "Preparing";
-        case SessionState::Prepared:  return "Prepared";
-        case SessionState::Running:   return "Running";
-        case SessionState::Paused:    return "Paused";
-        case SessionState::Reconnecting: return "Reconnecting";
-        case SessionState::Stopping:  return "Stopping";
-        case SessionState::Stopped:   return "Stopped";
-        case SessionState::Error:     return "Error";
-        default: return "Unknown";
-    }
-}
 
 // ============================================================
 // PublishSession::Impl
@@ -81,13 +66,13 @@ struct PublishSession::Impl {
         if (observer) {
             observer->on_state_changed(old, new_state);
         }
-        LOG_I("session", "state %s -> %s",
+        SB_LOG_I("session", "state %s -> %s",
               session_state_name(old), session_state_name(new_state));
     }
 
     // 线程：视频编码
     void video_encode_loop() {
-        LOG_I("encode", "video encode thread started");
+        SB_LOG_I("encode", "video encode thread started");
 
         while (!stop_source.stop_requested()) {
             VideoFrame frame;
@@ -97,7 +82,7 @@ struct PublishSession::Impl {
 
             auto result = video_encoder->encode(std::move(frame));
             if (result.is_err()) {
-                LOG_E("encode", "video encode error: %s", result.to_string().c_str());
+                SB_LOG_E("encode", "video encode error: %s", result.to_string().c_str());
                 continue;
             }
 
@@ -111,12 +96,12 @@ struct PublishSession::Impl {
             }
         }
     exit_video_loop:
-        LOG_I("encode", "video encode thread exiting");
+        SB_LOG_I("encode", "video encode thread exiting");
     }
 
     // 线程：音频编码
     void audio_encode_loop() {
-        LOG_I("encode", "audio encode thread started");
+        SB_LOG_I("encode", "audio encode thread started");
 
         while (!stop_source.stop_requested()) {
             AudioFrame frame;
@@ -126,7 +111,7 @@ struct PublishSession::Impl {
 
             auto result = audio_encoder->encode(std::move(frame));
             if (result.is_err()) {
-                LOG_E("encode", "audio encode error: %s", result.to_string().c_str());
+                SB_LOG_E("encode", "audio encode error: %s", result.to_string().c_str());
                 continue;
             }
 
@@ -140,12 +125,12 @@ struct PublishSession::Impl {
             }
         }
     exit_audio_loop:
-        LOG_I("encode", "audio encode thread exiting");
+        SB_LOG_I("encode", "audio encode thread exiting");
     }
 
     // 线程：封装 + 发布（音视频交织）
     void mux_loop() {
-        LOG_I("mux", "mux/publish thread started");
+        SB_LOG_I("mux", "mux/publish thread started");
 
         while (!stop_source.stop_requested()) {
             // Peek video and audio queues, pick the one with smaller PTS
@@ -175,7 +160,7 @@ struct PublishSession::Impl {
 
             auto result = publisher->write_packet(pkt);
             if (result.is_err()) {
-                LOG_E("mux", "write_packet error: %s", result.to_string().c_str());
+                SB_LOG_E("mux", "write_packet error: %s", result.to_string().c_str());
                 set_state(SessionState::Error);
                 if (observer) {
                     observer->on_error(result.error_domain(), result.error_code(),
@@ -185,7 +170,7 @@ struct PublishSession::Impl {
             }
             packets_sent++;
         }
-        LOG_I("mux", "mux/publish thread exiting");
+        SB_LOG_I("mux", "mux/publish thread exiting");
     }
 };
 
@@ -304,7 +289,7 @@ Result<void> PublishSession::start() {
             }
         },
         [this](ErrorDomain domain, ErrorCode code, std::string msg) {
-            LOG_E("capture", "[%s:%d] %s",
+            SB_LOG_E("capture", "[%s:%d] %s",
                   error_domain_name(domain), static_cast<int>(code), msg.c_str());
             if (impl_->observer) {
                 impl_->observer->on_error(domain, code, msg);
@@ -320,7 +305,7 @@ Result<void> PublishSession::start() {
                 impl_->raw_audio_queue.push(std::move(frame));
             },
             [this](ErrorDomain domain, ErrorCode code, std::string msg) {
-                LOG_E("capture", "[audio] [%s:%d] %s",
+                SB_LOG_E("capture", "[audio] [%s:%d] %s",
                       error_domain_name(domain), static_cast<int>(code), msg.c_str());
                 if (impl_->observer) {
                     impl_->observer->on_error(domain, code, msg);
@@ -350,7 +335,7 @@ void PublishSession::stop() {
         return;  // 幂等
     }
 
-    LOG_I("session", "stopping...");
+    SB_LOG_I("session", "stopping...");
     impl_->set_state(SessionState::Stopping);
 
     // 1. 请求停止
@@ -401,7 +386,7 @@ void PublishSession::stop() {
 
     // 汇总
     auto ps = impl_->publisher->stats();
-    LOG_I("session", "stopped — video cap=%ld enc=%ld audio cap=%ld enc=%ld "
+    SB_LOG_I("session", "stopped — video cap=%ld enc=%ld audio cap=%ld enc=%ld "
           "sent=%ld bytes=%ld drop=%ld",
           impl_->video_frames_captured.load(), impl_->video_frames_encoded.load(),
           impl_->audio_frames_captured.load(), impl_->audio_frames_encoded.load(),

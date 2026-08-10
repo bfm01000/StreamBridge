@@ -1,6 +1,5 @@
 add_library(sb_linux_platform STATIC
     ffmpeg_utils.cpp
-    logger.cpp
     capture/ffmpeg_video_capture.cpp
     capture/ffmpeg_audio_capture.cpp
     capture/alsa_audio_capture.cpp
@@ -8,7 +7,6 @@ add_library(sb_linux_platform STATIC
     encode/ffmpeg_video_encoder.cpp
     encode/ffmpeg_audio_encoder.cpp
     publish/ffmpeg_rtmp_publisher.cpp
-    session_impl.cpp
 )
 
 target_link_libraries(sb_linux_platform PUBLIC
