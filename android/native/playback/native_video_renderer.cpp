@@ -241,17 +241,10 @@ streambridge::Result<void> NativeVideoRenderer::render_yuv420p(
             const int sx = std::clamp(
                 static_cast<int>((dx + 0.5f) * scale_x - 0.5f), 0, src_w - 1);
 
-            const int yy = static_cast<int>(y_row[sx]);
-            const int uu = static_cast<int>(u_row[sx / 2]) - 128;
-            const int vv = static_cast<int>(v_row[sx / 2]) - 128;
-
-            auto clamp_u8 = [](int v) -> uint8_t {
-                return static_cast<uint8_t>(std::max(0, std::min(255, v)));
-            };
-
-            const uint8_t r = clamp_u8(yy + ((359 * vv) >> 8));
-            const uint8_t g = clamp_u8(yy - ((88 * uu + 183 * vv) >> 8));
-            const uint8_t b = clamp_u8(yy + ((454 * uu) >> 8));
+            uint8_t r, g, b;
+            yuv_to_rgb(static_cast<int>(y_row[sx]),
+                       static_cast<int>(u_row[sx / 2]),
+                       static_cast<int>(v_row[sx / 2]), r, g, b);
             dst_row[dx] = pack_rgba(r, g, b);
         }
     }
