@@ -1,8 +1,10 @@
 #pragma once
 // 编解码接口
 
+#include <memory>
 #include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "streambridge/media_errors.h"
@@ -107,65 +109,81 @@ public:
 };
 
 // ============================================================
-// 解码器接口
+// 解码器接口 v2.1
 // ============================================================
 
-// 解码器输出信息（不包含像素/采样数据——零拷贝友好）
-struct DecodeOutputInfo {
-    bool has_output = false;
-    int64_t pts_us = -1;
-    int64_t duration_us = -1;
-    int output_index = -1;  // decoder-specific handle for release_output
+// 解码状态
+enum class DecodeStatus {
+    FrameReady,   // 成功取出一帧
+    TryAgain,     // 暂无输出，需要更多输入（EAGAIN / timeout）
+    EndOfStream,  // 流结束
+};
+
+// 解码器能力
+struct DecoderCapability {
+    bool hardware = false;
+    bool supports_surface_output = false;
+    bool supports_cpu_output = false;
+};
+
+// ── Frame handles（标记联合，编译期保证只有一个分支有效）──
+
+// CPU 帧：shared_ptr owning，Session/Renderer 持有最后一个引用时自动释放
+struct CpuFrameHandle {
+    std::shared_ptr<CpuFrameBuffer> buffer;
+    VideoFrame frame;
+};
+
+// Surface 输出：opaque，Session 不需要知道 ANativeWindow*
+struct DecoderSurfaceHandle {};
+
+// 未来：DMA-BUF、GPU Texture
+struct DmaBufFrameHandle { /* fd, planes, stride, modifier */ };
+struct GpuTextureHandle { /* texture_id */ };
+
+using FramePayload = std::variant<
+    CpuFrameHandle,
+    DecoderSurfaceHandle,
+    DmaBufFrameHandle,
+    GpuTextureHandle
+>;
+
+// 统一解码输出
+struct DecodeOutput {
+    uint64_t frame_id = 0;
+    int64_t pts_us = 0;
+    FramePayload payload;
 };
 
 // 视频解码器统一接口
-// FFmpeg 软解和 MediaCodec 硬解均实现此接口
 class IVideoDecoder {
 public:
     virtual ~IVideoDecoder() = default;
-
-    enum class OutputMode {
-        CpuFrame,   // 解码帧落在 CPU 内存，通过 receive_frame() 取出
-        Surface,    // 解码帧直接渲染到 Surface，零拷贝
-    };
 
     // --- 生命周期 ---
     virtual Result<void> open(const StreamInfo& info) = 0;
     virtual void close() = 0;
     virtual bool is_open() const = 0;
 
-    // --- 数据路径（两个模式通用）---
-    // 喂入编码包；可多次调用，解码器内部缓冲
-    virtual Result<void> send_packet(const MediaPacket& packet) = 0;
+    // --- 数据路径 ---
+    virtual Result<DecodeStatus> send_packet(const MediaPacket& packet) = 0;
+    virtual Result<DecodeOutput> receive_frame(int timeout_ms) = 0;
 
-    // 取出下一帧的输出信息（阻塞或超时返回 has_output=false）
-    virtual Result<DecodeOutputInfo> dequeue_output(int64_t timeout_us) = 0;
+    // --- 帧生命周期 ---
+    // 向显示目标提交帧（DecoderSurface / DMA-BUF / Texture 用）
+    virtual Result<void> present_frame(uint64_t frame_id, int64_t target_time_ns) = 0;
+    // 丢弃帧（所有模式通用）
+    virtual Result<void> discard_frame(uint64_t frame_id) = 0;
 
-    // 释放/渲染输出帧
-    // CpuFrame 模式：render 参数无意义（帧已通过 receive_frame 取出）
-    // Surface 模式：render=true 提交到 Surface，render=false 丢弃
-    virtual void release_output(int output_index, bool render) = 0;
-
-    // 冲刷解码器缓冲（发送 null packet，取回残余帧）
+    // --- 控制 ---
     virtual Result<void> drain() = 0;
-
-    // 清空内部缓冲（用于 seek / reconnect）
     virtual void flush() = 0;
 
-    // --- 能力查询 ---
-    virtual OutputMode output_mode() const = 0;
-    virtual DecodeCapability capability() const = 0;
-
-    // --- CPU 模式专用 ---
-    struct CpuFrameResult {
-        bool has_frame = false;
-        VideoFrame frame;
-    };
-    // 从 output_index 取出解码帧数据（调用后应 release_output(index, false)）
-    virtual Result<CpuFrameResult> receive_frame(int output_index) = 0;
+    // --- 能力 ---
+    virtual DecoderCapability capability() const = 0;
 };
 
-// 音频解码器接口
+// 音频解码器接口（本次不变）
 class IAudioDecoder {
 public:
     virtual ~IAudioDecoder() = default;

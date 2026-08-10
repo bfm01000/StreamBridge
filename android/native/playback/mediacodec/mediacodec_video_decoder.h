@@ -1,12 +1,13 @@
 #pragma once
-// MediaCodec H.264 video decoder — implements common IVideoDecoder (Surface mode)
-// Zero-copy: decoded frames go directly to ANativeWindow Surface via GPU
+// MediaCodec H.264 video decoder — implements IVideoDecoder (DecoderSurface output)
+// Zero-copy: GPU renders directly to ANativeWindow Surface
 
 #include <android/native_window.h>
 #include <media/NdkMediaCodec.h>
 #include <media/NdkMediaFormat.h>
 
 #include <cstdint>
+#include <unordered_map>
 
 #include "ffmpeg/codec_config.h"
 #include "mediacodec_raii.h"
@@ -21,35 +22,28 @@ public:
     MediaCodecVideoDecoder();
     ~MediaCodecVideoDecoder() override;
 
-    MediaCodecVideoDecoder(const MediaCodecVideoDecoder&) = delete;
-    MediaCodecVideoDecoder& operator=(const MediaCodecVideoDecoder&) = delete;
-
-    // --- IVideoDecoder interface ---
+    // --- IVideoDecoder v2.1 ---
     Result<void> open(const StreamInfo& info) override;
     void close() override;
     bool is_open() const override { return codec_ != nullptr; }
 
-    Result<void> send_packet(const MediaPacket& packet) override;
-    Result<DecodeOutputInfo> dequeue_output(int64_t timeout_us) override;
-    void release_output(int output_index, bool render) override;
+    Result<DecodeStatus> send_packet(const MediaPacket& packet) override;
+    Result<DecodeOutput> receive_frame(int timeout_ms) override;
+
+    Result<void> present_frame(uint64_t frame_id, int64_t target_time_ns) override;
+    Result<void> discard_frame(uint64_t frame_id) override;
+
     Result<void> drain() override;
     void flush() override;
 
-    OutputMode output_mode() const override { return OutputMode::Surface; }
-    DecodeCapability capability() const override;
+    DecoderCapability capability() const override;
 
-    // CPU mode: not supported for Surface output
-    Result<CpuFrameResult> receive_frame(int output_index) override;
-
-    // Surface mode: update the output Surface (e.g., after activity recreate)
+    // Surface management (Android-specific, not in common interface)
     Result<void> set_surface(ANativeWindow* window);
 
 private:
-    // Configure the codec with current format and surface
     Result<void> configure_with_surface(ANativeWindow* surface);
-    // Try to configure once parameter sets are complete
     Result<void> try_finish_configuration();
-    // Rebuild the codec (e.g., after surface change)
     Result<void> recreate(ANativeWindow* new_surface);
 
     AMediaCodec* codec_ = nullptr;
@@ -57,24 +51,20 @@ private:
     AVCodecID codec_id_ = AV_CODEC_ID_NONE;
     int width_ = 0;
     int height_ = 0;
-    int frame_index_ = 0;
+    uint64_t next_frame_id_ = 1;
     bool started_ = false;
     bool saw_eos_ = false;
     bool config_complete_ = false;
 
-    // Delayed configuration (bare Annex-B: SPS/PPS arrive in packets)
-    streambridge::ffmpeg::CodecConfig pending_config_;
-    std::vector<uint8_t> pending_packets_;  // buffered before config complete
+    // frame_id → MediaCodec output buffer index
+    std::unordered_map<uint64_t, int> frame_map_;
 
-    int64_t last_queued_pts_us_ = -1;
+    // Delayed configuration
+    streambridge::ffmpeg::CodecConfig pending_config_;
+    std::vector<uint8_t> pending_packets_;
 };
 
-// Factory: prefer MediaCodec hardware, fallback to FFmpeg software
-// surface can be nullptr (pass it later via set_surface for MediaCodec)
-std::unique_ptr<streambridge::IVideoDecoder> create_video_decoder(
-    ANativeWindow* surface);
-
-// Also: factory for audio (always FFmpeg for now)
+std::unique_ptr<streambridge::IVideoDecoder> create_video_decoder(ANativeWindow* surface);
 std::unique_ptr<streambridge::IAudioDecoder> create_audio_decoder();
 
 }  // namespace streambridge::android::mediacodec

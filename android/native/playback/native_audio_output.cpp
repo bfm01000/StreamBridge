@@ -49,11 +49,9 @@ streambridge::Result<void> NativeAudioOutput::open(int sample_rate, int channels
         return audio_error(streambridge::ErrorCode::DeviceBusy, "failed to open AAudio stream");
     }
 
-    result = AAudioStream_requestStart(stream_);
-    if (result != AAUDIO_OK) {
-        close();
-        return audio_error(streambridge::ErrorCode::DeviceBusy, "failed to start AAudio stream");
-    }
+    // Don't call requestStart yet — delay until first audio frame is ready
+    // This prevents AAudio from playing silence and skewing the clock
+    started_ = false;
 
     sample_rate_ = AAudioStream_getSampleRate(stream_);
     channels_ = AAudioStream_getChannelCount(stream_);
@@ -66,6 +64,13 @@ streambridge::Result<void> NativeAudioOutput::open(int sample_rate, int channels
             AAudioStream_getFramesPerBurst(stream_));
 
     return streambridge::Result<void>::ok();
+}
+
+void NativeAudioOutput::start() {
+    if (stream_ != nullptr && !started_) {
+        AAudioStream_requestStart(stream_);
+        started_ = true;
+    }
 }
 
 streambridge::Result<void> NativeAudioOutput::write(const streambridge::AudioFrame& frame) {

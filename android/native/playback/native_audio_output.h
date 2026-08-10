@@ -17,6 +17,7 @@ public:
     NativeAudioOutput& operator=(const NativeAudioOutput&) = delete;
 
     streambridge::Result<void> open(int sample_rate, int channels);
+    void start();  // call before first write (delays requestStart)
     streambridge::Result<void> write(const streambridge::AudioFrame& frame);
     void close();
 
@@ -26,6 +27,7 @@ public:
 
 private:
     AAudioStream* stream_ = nullptr;
+    bool started_ = false;
     int sample_rate_ = 0;
     int channels_ = 0;
     int64_t submitted_frames_ = 0;
