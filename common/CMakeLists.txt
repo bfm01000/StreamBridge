@@ -11,6 +11,7 @@ add_library(sb_common STATIC
     src/logging.cpp
     src/session_impl.cpp
     src/session_utils.cpp
+    src/ffmpeg/codec_config.cpp
     src/ffmpeg/ffmpeg_video_decoder.cpp
     src/ffmpeg/ffmpeg_audio_decoder.cpp
     src/ffmpeg/ffmpeg_subscriber.cpp

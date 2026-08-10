@@ -41,6 +41,12 @@ enum class ErrorCode {
     CodecDecodeFailed     = 204,
     CodecFormatUnsupported= 205,
     CodecDrainFailed      = 206,
+    InvalidCodecConfig    = 207,
+    MissingSps            = 208,
+    MissingPps            = 209,
+    MissingVps            = 210,
+    MalformedAvcc         = 211,
+    MalformedHvcc         = 212,
 
     // Network (3xx)
     NetworkConnectFailed  = 301,

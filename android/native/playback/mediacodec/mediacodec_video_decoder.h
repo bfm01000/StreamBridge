@@ -8,6 +8,7 @@
 
 #include <cstdint>
 
+#include "ffmpeg/codec_config.h"
 #include "mediacodec_raii.h"
 #include "streambridge/codec.h"
 #include "streambridge/media_errors.h"
@@ -46,19 +47,25 @@ public:
 private:
     // Configure the codec with current format and surface
     Result<void> configure_with_surface(ANativeWindow* surface);
+    // Try to configure once parameter sets are complete
+    Result<void> try_finish_configuration();
     // Rebuild the codec (e.g., after surface change)
     Result<void> recreate(ANativeWindow* new_surface);
 
     AMediaCodec* codec_ = nullptr;
-    ANativeWindow* surface_ = nullptr;  // borrowed, not owned
+    ANativeWindow* surface_ = nullptr;
+    AVCodecID codec_id_ = AV_CODEC_ID_NONE;
     int width_ = 0;
     int height_ = 0;
     int frame_index_ = 0;
     bool started_ = false;
     bool saw_eos_ = false;
+    bool config_complete_ = false;
 
-    // Input tracking: queue of pending PTS values (MediaCodec preserves PTS ordering)
-    // We track locally for diagnostic logging
+    // Delayed configuration (bare Annex-B: SPS/PPS arrive in packets)
+    streambridge::ffmpeg::CodecConfig pending_config_;
+    std::vector<uint8_t> pending_packets_;  // buffered before config complete
+
     int64_t last_queued_pts_us_ = -1;
 };
 

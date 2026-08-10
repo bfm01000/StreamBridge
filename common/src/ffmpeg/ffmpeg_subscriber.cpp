@@ -1,5 +1,6 @@
 #include "ffmpeg_subscriber.h"
 
+#include "codec_config.h"
 #include "streambridge/ffmpeg_utils.h"
 #include "streambridge/logging.h"
 
@@ -176,6 +177,43 @@ streambridge::Result<void> FFmpegSubscriber::open(const std::string& url) {
             "no audio or video stream found in RTMP source");
     }
 
+    // Init bitstream filter if needed (avcC/hvcC → Annex-B)
+    if (has_video_ && !video_info_.codec_extradata.empty()) {
+        auto detect = detect_bitstream_format(
+            (video_info_.codec == CodecId::H265) ? AV_CODEC_ID_H265 : AV_CODEC_ID_H264,
+            video_info_.codec_extradata.data(),
+            video_info_.codec_extradata.size());
+
+        const char* bsf_name = nullptr;
+        if (detect == BitstreamFormat::Avcc) {
+            bsf_name = "h264_mp4toannexb";
+        } else if (detect == BitstreamFormat::Hvcc) {
+            bsf_name = "hevc_mp4toannexb";
+        }
+
+        if (bsf_name != nullptr) {
+            const AVBitStreamFilter* bsf = av_bsf_get_by_name(bsf_name);
+            if (bsf != nullptr) {
+                int ret = av_bsf_alloc(bsf, &video_bsf_ctx_);
+                if (ret >= 0) {
+                    ret = avcodec_parameters_copy(video_bsf_ctx_->par_in,
+                                                   fmt_ctx_->streams[video_stream_index_]->codecpar);
+                    if (ret >= 0) {
+                        ret = av_bsf_init(video_bsf_ctx_);
+                        if (ret >= 0) {
+                            need_bsf_ = true;
+                            log_info("BSF initialized for Annex-B conversion");
+                        }
+                    }
+                    if (ret < 0) {
+                        av_bsf_free(&video_bsf_ctx_);
+                        video_bsf_ctx_ = nullptr;
+                    }
+                }
+            }
+        }
+    }
+
     log_info("subscriber opened successfully");
     return streambridge::Result<void>::ok();
 }
@@ -263,10 +301,92 @@ streambridge::Result<streambridge::MediaPacket> FFmpegSubscriber::read_packet() 
     }
 
     av_packet_free(&pkt);
+
+    // Apply bitstream filter for video (avcC/hvcC → Annex-B)
+    if (packet.type == streambridge::MediaType::Video && need_bsf_) {
+        auto bsf_result = apply_bsf(packet);
+        if (bsf_result.is_err()) {
+            return bsf_result;
+        }
+        packet = std::move(*bsf_result);
+    }
+
     return streambridge::Result<streambridge::MediaPacket>::ok(std::move(packet));
 }
 
+Result<streambridge::MediaPacket> FFmpegSubscriber::apply_bsf(
+        const streambridge::MediaPacket& input) {
+    // Build AVPacket from MediaPacket
+    AVPacket* in_pkt = av_packet_alloc();
+    if (in_pkt == nullptr) {
+        return Result<streambridge::MediaPacket>::err(
+            ErrorDomain::Resource, ErrorCode::OutOfMemory, "BSF: av_packet_alloc failed");
+    }
+    in_pkt->data = const_cast<uint8_t*>(input.data.data());
+    in_pkt->size = static_cast<int>(input.data.size());
+    if (input.has_valid_pts()) {
+        in_pkt->pts = input.pts.us;
+        in_pkt->dts = input.dts.us >= 0 ? input.dts.us : input.pts.us;
+    } else {
+        in_pkt->pts = AV_NOPTS_VALUE;
+        in_pkt->dts = AV_NOPTS_VALUE;
+    }
+
+    // Standard BSF send/receive state machine
+    int ret = av_bsf_send_packet(video_bsf_ctx_, in_pkt);
+    av_packet_free(&in_pkt);
+
+    if (ret < 0 && ret != AVERROR(EAGAIN)) {
+        return Result<streambridge::MediaPacket>::err(
+            ErrorDomain::Codec, ErrorCode::CodecDecodeFailed,
+            "BSF send_packet failed");
+    }
+
+    AVPacket* out_pkt = av_packet_alloc();
+    if (out_pkt == nullptr) {
+        return Result<streambridge::MediaPacket>::err(
+            ErrorDomain::Resource, ErrorCode::OutOfMemory, "BSF: av_packet_alloc failed");
+    }
+
+    ret = av_bsf_receive_packet(video_bsf_ctx_, out_pkt);
+    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+        av_packet_free(&out_pkt);
+        // No output yet, return original packet (transparent passthrough until BSF flushes)
+        streambridge::MediaPacket passthrough = input;
+        return Result<streambridge::MediaPacket>::ok(std::move(passthrough));
+    }
+    if (ret < 0) {
+        av_packet_free(&out_pkt);
+        return Result<streambridge::MediaPacket>::err(
+            ErrorDomain::Codec, ErrorCode::CodecDecodeFailed,
+            "BSF receive_packet failed");
+    }
+
+    // Build output MediaPacket
+    streambridge::MediaPacket output;
+    output.type = input.type;
+    output.codec = input.codec;
+    output.pts = TimePointUs{out_pkt->pts != AV_NOPTS_VALUE ? out_pkt->pts : 0};
+    output.dts = TimePointUs{out_pkt->dts != AV_NOPTS_VALUE ? out_pkt->dts : 0};
+    output.duration = input.duration;
+    output.is_key_frame = input.is_key_frame;
+    output.stream_index = input.stream_index;
+    output.sequence_number = input.sequence_number;
+    if (out_pkt->size > 0) {
+        output.data.resize(out_pkt->size);
+        std::memcpy(output.data.data(), out_pkt->data, out_pkt->size);
+    }
+
+    av_packet_free(&out_pkt);
+    return Result<streambridge::MediaPacket>::ok(std::move(output));
+}
+
 void FFmpegSubscriber::close() {
+    if (video_bsf_ctx_ != nullptr) {
+        av_bsf_free(&video_bsf_ctx_);
+        video_bsf_ctx_ = nullptr;
+        need_bsf_ = false;
+    }
     if (fmt_ctx_ != nullptr) {
         avformat_close_input(&fmt_ctx_);
         fmt_ctx_ = nullptr;
