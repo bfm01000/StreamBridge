@@ -1,8 +1,7 @@
 #include "ffmpeg_audio_decoder.h"
 
-#include <android/log.h>
-
-#include "ffmpeg_raii.h"
+#include "streambridge/ffmpeg_utils.h"
+#include "streambridge/logging.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -14,6 +13,12 @@ extern "C" {
 #include <cstring>
 
 namespace streambridge::android::ffmpeg {
+
+// Common FFmpeg RAII (now in streambridge::)
+using streambridge::make_avcodec;
+using streambridge::make_avframe;
+using streambridge::make_avpacket;
+
 namespace {
 
 static constexpr char kTag[] = "StreamBridgeADec";
@@ -90,9 +95,9 @@ streambridge::Result<void> FFmpegAudioDecoder::open(const streambridge::StreamIn
     dst_sample_rate_ = codec_ctx_->sample_rate;
     dst_channels_ = codec_ctx_->ch_layout.nb_channels;
     frame_index_ = 0;
-    pts_queue_.clear();
+    pts_fifo_.clear();
 
-    __android_log_print(ANDROID_LOG_INFO, kTag,
+    SB_LOG_I(kTag,
             "decoder output: sample_rate=%d channels=%d sample_fmt=%d codec_tb=%d/%d",
             codec_ctx_->sample_rate,
             codec_ctx_->ch_layout.nb_channels,
@@ -158,7 +163,7 @@ streambridge::Result<void> FFmpegAudioDecoder::send_packet(
 
     // Push PTS to FIFO queue before sending
     if (packet.has_valid_pts()) {
-        pts_queue_.push_back(packet.pts.us);
+        pts_fifo_.push(packet.pts.us);
     }
 
     avpkt->pts = AV_NOPTS_VALUE;
@@ -168,7 +173,7 @@ streambridge::Result<void> FFmpegAudioDecoder::send_packet(
     av_packet_free(&avpkt);
 
     if (ret < 0 && ret != AVERROR(EAGAIN)) {
-        if (!pts_queue_.empty()) pts_queue_.pop_back();
+        pts_fifo_.pop_back();
         char errbuf[256] = {};
         av_strerror(ret, errbuf, sizeof(errbuf));
         return streambridge::Result<void>::err(
@@ -214,10 +219,7 @@ FFmpegAudioDecoder::receive_frame() {
 
     // Pop PTS from FIFO queue
     int64_t output_pts_us = -1;
-    if (!pts_queue_.empty()) {
-        output_pts_us = pts_queue_.front();
-        pts_queue_.pop_front();
-    }
+    output_pts_us = pts_fifo_.pop();
 
     return frame_to_audio_frame(av_frame.get(), output_pts_us);
 }
@@ -261,7 +263,7 @@ void FFmpegAudioDecoder::close() {
         codec_ctx_ = nullptr;
     }
     frame_index_ = 0;
-    pts_queue_.clear();
+    pts_fifo_.clear();
 }
 
 streambridge::Result<FFmpegAudioDecoder::DecodeResult>
@@ -309,14 +311,14 @@ FFmpegAudioDecoder::frame_to_audio_frame(const AVFrame* av_frame, int64_t pts_us
 
     // Diagnostic: every 50 frames
     if (frame_index_ % 50 == 0) {
-        __android_log_print(ANDROID_LOG_INFO, kTag,
+        SB_LOG_I(kTag,
                 "frame#%lld: src_samples=%d converted=%d ch=%d "
                 "bytes[0..3]=%02x%02x%02x%02x pts_us=%lld q_depth=%zu",
                 static_cast<long long>(frame_index_),
                 src_samples, converted, dst_channels,
                 out_data[0], out_data[1], out_data[2], out_data[3],
                 static_cast<long long>(pts_us),
-                pts_queue_.size());
+                pts_fifo_.size());
     }
 
     streambridge::AudioFrame frame;

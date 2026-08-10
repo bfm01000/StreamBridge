@@ -1,6 +1,7 @@
 #include "ffmpeg_subscriber.h"
 
-#include <android/log.h>
+#include "streambridge/ffmpeg_utils.h"
+#include "streambridge/logging.h"
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -22,7 +23,7 @@ __attribute__((unused))
 static bool test_posix_connect(const char* host, int port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
-        __android_log_print(ANDROID_LOG_ERROR, "StreamBridgeSub",
+        SB_LOG_E("StreamBridgeSub",
                 "POSIX socket() failed: %s (%d)", strerror(errno), errno);
         return false;
     }
@@ -30,7 +31,7 @@ static bool test_posix_connect(const char* host, int port) {
     addr.sin_family = AF_INET;
     addr.sin_port = htons(static_cast<uint16_t>(port));
     if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
-        __android_log_print(ANDROID_LOG_ERROR, "StreamBridgeSub",
+        SB_LOG_E("StreamBridgeSub",
                 "inet_pton failed: %s (%d)", strerror(errno), errno);
         close(fd);
         return false;
@@ -38,11 +39,11 @@ static bool test_posix_connect(const char* host, int port) {
     int ret = connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
     close(fd);
     if (ret < 0) {
-        __android_log_print(ANDROID_LOG_ERROR, "StreamBridgeSub",
+        SB_LOG_E("StreamBridgeSub",
                 "POSIX connect() failed: %s (%d)", strerror(errno), errno);
         return false;
     }
-    __android_log_print(ANDROID_LOG_INFO, "StreamBridgeSub",
+    SB_LOG_I("StreamBridgeSub",
             "POSIX connect OK: %s:%d fd=%d", host, port, fd);
     return true;
 }
@@ -55,11 +56,11 @@ namespace {
 constexpr char kLogTag[] = "StreamBridgeSub";
 
 void log_info(const char* msg) {
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "%s", msg);
+    SB_LOG_I(kLogTag, "%s", msg);
 }
 
 void log_error(const char* msg) {
-    __android_log_print(ANDROID_LOG_ERROR, kLogTag, "%s", msg);
+    SB_LOG_E(kLogTag, "%s", msg);
 }
 
 // FFmpeg time_base → 微秒
@@ -139,7 +140,7 @@ streambridge::Result<void> FFmpegSubscriber::open(const std::string& url) {
             video_info_.bitrate_bps = par->bit_rate;
             fill_extradata(par, video_info_);
 
-            __android_log_print(ANDROID_LOG_INFO, kLogTag,
+            SB_LOG_I(kLogTag,
                     "video stream: codec=%d %dx%d fps=%.2f tb=%d/%d",
                     static_cast<int>(par->codec_id),
                     par->width, par->height,
@@ -159,7 +160,7 @@ streambridge::Result<void> FFmpegSubscriber::open(const std::string& url) {
             audio_info_.bitrate_bps = par->bit_rate;
             fill_extradata(par, audio_info_);
 
-            __android_log_print(ANDROID_LOG_INFO, kLogTag,
+            SB_LOG_I(kLogTag,
                     "audio stream: codec=%d %dHz %dch tb=%d/%d",
                     static_cast<int>(par->codec_id),
                     par->sample_rate, par->ch_layout.nb_channels,
@@ -218,7 +219,7 @@ streambridge::Result<streambridge::MediaPacket> FFmpegSubscriber::read_packet() 
     if (pkt->stream_index == video_stream_index_) {
         // PTS 诊断：前 5 个视频包打印原始 PTS
         if (packet_seq_ <= 5) {
-            __android_log_print(ANDROID_LOG_INFO, kLogTag,
+            SB_LOG_I(kLogTag,
                     "video raw pkt#%lld pts=%lld dts=%lld tb=%d/%d key=%d",
                     static_cast<long long>(packet_seq_),
                     static_cast<long long>(pkt->pts),
@@ -236,7 +237,7 @@ streambridge::Result<streambridge::MediaPacket> FFmpegSubscriber::read_packet() 
     } else if (pkt->stream_index == audio_stream_index_) {
         // PTS 诊断：前 5 个音频包打印原始 PTS
         if (packet_seq_ <= 5) {
-            __android_log_print(ANDROID_LOG_INFO, kLogTag,
+            SB_LOG_I(kLogTag,
                     "audio raw pkt#%lld pts=%lld dts=%lld tb=%d/%d",
                     static_cast<long long>(packet_seq_),
                     static_cast<long long>(pkt->pts),

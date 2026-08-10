@@ -2,8 +2,6 @@
 // FFmpeg AAC audio decoder
 // Receives MediaPacket, outputs S16 interleaved AudioFrame (for AAudio output)
 
-#include <deque>
-
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libswresample/swresample.h>
@@ -11,6 +9,7 @@ extern "C" {
 
 #include "streambridge/media_errors.h"
 #include "streambridge/media_types.h"
+#include "streambridge/pts_fifo.h"
 
 namespace streambridge::android::ffmpeg {
 
@@ -52,8 +51,8 @@ private:
     int dst_channels_ = 0;
     int64_t frame_index_ = 0;
 
-    // PTS FIFO queue: push on send, pop on receive
-    std::deque<int64_t> pts_queue_;
+    // PTS FIFO: tracks packet PTS → output frame PTS ordering
+    streambridge::PtsFifo pts_fifo_;
 
     // AVFrame -> AudioFrame conversion (via swresample FLTP->S16)
     streambridge::Result<DecodeResult> frame_to_audio_frame(const AVFrame* av_frame,

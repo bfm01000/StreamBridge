@@ -1,8 +1,8 @@
 #include "native_playback_session.h"
 
-#include <android/log.h>
-
 #include <algorithm>
+
+#include "streambridge/logging.h"
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -18,22 +18,7 @@ constexpr int64_t kPacketPopTimeoutMs = 200;
 constexpr int64_t kDemuxReadTimeoutMs = 5000;
 
 void log_info(const char* msg) {
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "%s", msg);
-}
-
-const char* state_name(streambridge::SessionState s) {
-    switch (s) {
-        case streambridge::SessionState::Idle:         return "Idle";
-        case streambridge::SessionState::Preparing:    return "Preparing";
-        case streambridge::SessionState::Prepared:     return "Prepared";
-        case streambridge::SessionState::Running:      return "Running";
-        case streambridge::SessionState::Paused:       return "Paused";
-        case streambridge::SessionState::Reconnecting: return "Reconnecting";
-        case streambridge::SessionState::Stopping:     return "Stopping";
-        case streambridge::SessionState::Stopped:      return "Stopped";
-        case streambridge::SessionState::Error:        return "Error";
-    }
-    return "Unknown";
+    SB_LOG_I(kLogTag, "%s", msg);
 }
 
 }  // namespace
@@ -95,7 +80,7 @@ int NativePlaybackSession::start(std::string url, ANativeWindow* window) {
     set_state(streambridge::SessionState::Preparing);
 
 #ifdef STREAMBRIDGE_BUILD_VERSION
-    __android_log_print(ANDROID_LOG_INFO, kLogTag,
+    SB_LOG_I(kLogTag,
             "build version: " STREAMBRIDGE_BUILD_VERSION);
 #endif
 
@@ -171,7 +156,7 @@ streambridge::SessionState NativePlaybackSession::state() const {
 std::string NativePlaybackSession::status_text() const {
     std::lock_guard<std::mutex> lock(mutex_);
     std::ostringstream oss;
-    oss << state_name(state_);
+    oss << streambridge::session_state_name(state_);
     if (!last_error_.empty()) {
         oss << ": " << last_error_;
     }
@@ -203,7 +188,7 @@ void NativePlaybackSession::set_error(const std::string& msg) {
     abort_requested_ = true;
     video_packet_queue_.abort();
     audio_packet_queue_.abort();
-    __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Error: %s", msg.c_str());
+    SB_LOG_E(kLogTag, "Error: %s", msg.c_str());
 }
 
 void NativePlaybackSession::request_stop() {
@@ -236,7 +221,7 @@ void NativePlaybackSession::demux_loop() {
     // Outer loop: handles reconnection on network failure
     while (!is_stopping() && reconnect_count <= kMaxReconnect) {
         if (reconnect_count > 0) {
-            __android_log_print(ANDROID_LOG_INFO, kLogTag,
+            SB_LOG_I(kLogTag,
                     "demux: reconnect attempt %d/%d after %dms",
                     reconnect_count, kMaxReconnect, kReconnectDelayMs);
 
@@ -269,7 +254,7 @@ void NativePlaybackSession::demux_loop() {
         // Open subscriber
         auto open_result = subscriber_.open(url_copy);
         if (open_result.is_err()) {
-            __android_log_print(ANDROID_LOG_WARN, kLogTag,
+            SB_LOG_W(kLogTag,
                     "demux: open failed (attempt %d): %s",
                     reconnect_count, open_result.error_message().c_str());
             ++reconnect_count;
@@ -281,7 +266,7 @@ void NativePlaybackSession::demux_loop() {
             std::lock_guard<std::mutex> lock(mutex_);
             video_info_ = subscriber_.video_stream();
             audio_info_ = subscriber_.audio_stream();
-            __android_log_print(ANDROID_LOG_INFO, kLogTag,
+            SB_LOG_I(kLogTag,
                     "demux: has_video=%d has_audio=%d",
                     video_info_ != nullptr, audio_info_ != nullptr);
             set_state_locked(streambridge::SessionState::Running);
@@ -289,7 +274,7 @@ void NativePlaybackSession::demux_loop() {
 
         clock_.start(streambridge::TimePointUs{0});
         reconnect_count = 0;  // reset on successful connection
-        __android_log_print(ANDROID_LOG_INFO, kLogTag,
+        SB_LOG_I(kLogTag,
                 "demux: connected, reading packets");
 
         // Read loop
@@ -298,12 +283,12 @@ void NativePlaybackSession::demux_loop() {
         while (!is_stopping()) {
             auto result = subscriber_.read_packet();
             if (++packet_count == 1) {
-                __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                SB_LOG_I(kLogTag,
                         "demux: first packet read, type=%d",
                         static_cast<int>(result->type));
             }
             if (result.is_err()) {
-                __android_log_print(ANDROID_LOG_WARN, kLogTag,
+                SB_LOG_W(kLogTag,
                         "demux: read error: %s", result.error_message().c_str());
                 connection_lost = true;
                 break;
@@ -392,7 +377,7 @@ void NativePlaybackSession::video_loop() {
         video_info_copy = *video_info_;
     }
 
-    __android_log_print(ANDROID_LOG_INFO, kLogTag,
+    SB_LOG_I(kLogTag,
             "video: opening decoder codec=%d %dx%d",
             static_cast<int>(video_info_copy.codec),
             video_info_copy.width, video_info_copy.height);
@@ -477,14 +462,14 @@ void NativePlaybackSession::video_loop() {
             // Render
             auto render_result = renderer_.render(frame);
             if (video_frames_rendered_ == 0) {
-                __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                SB_LOG_I(kLogTag,
                         "video: first frame rendered %dx%d fmt=%d pts=%lld",
                         frame.width, frame.height,
                         static_cast<int>(frame.format),
                         static_cast<long long>(frame.pts.us));
             }
             if (video_frames_rendered_ % 100 == 0) {
-                __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                SB_LOG_I(kLogTag,
                         "video: frame=%lld pts=%lld av=%lld q=%zu",
                         static_cast<long long>(video_frames_rendered_),
                         static_cast<long long>(frame.pts.us),
@@ -492,7 +477,7 @@ void NativePlaybackSession::video_loop() {
                         video_packet_queue_.size());
             }
             if (render_result.is_err()) {
-                __android_log_print(ANDROID_LOG_WARN, kLogTag,
+                SB_LOG_W(kLogTag,
                                     "render failed: %s",
                                     render_result.error_message().c_str());
             } else {
@@ -505,7 +490,7 @@ void NativePlaybackSession::video_loop() {
                 static int64_t last_log_pts_us = 0;
                 if (frame.pts.us - last_log_pts_us >= 5'000'000) {
                     last_log_pts_us = frame.pts.us;
-                    __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                    SB_LOG_I(kLogTag,
                             "stability: pts=%lld rendered=%lld dropped=%lld "
                             "vq=%zu aq=%zu av=%lld state=%s",
                             static_cast<long long>(frame.pts.us),
@@ -514,7 +499,7 @@ void NativePlaybackSession::video_loop() {
                             video_packet_queue_.size(),
                             audio_packet_queue_.size(),
                             static_cast<long long>(sync.av_diff_us),
-                            state_name(state_));
+                            streambridge::session_state_name(state_));
                 }
             }
         }
@@ -609,7 +594,7 @@ void NativePlaybackSession::audio_loop() {
 
             auto write_result = audio_output_.write(frame);
             if (write_result.is_err()) {
-                __android_log_print(ANDROID_LOG_WARN, kLogTag,
+                SB_LOG_W(kLogTag,
                                     "audio write failed: %s",
                                     write_result.error_message().c_str());
             } else {

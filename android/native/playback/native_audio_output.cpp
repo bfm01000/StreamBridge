@@ -2,7 +2,8 @@
 
 #include <algorithm>
 #include <string>
-#include <android/log.h>
+
+#include "streambridge/logging.h"
 
 namespace streambridge::android {
 namespace {
@@ -58,7 +59,7 @@ streambridge::Result<void> NativeAudioOutput::open(int sample_rate, int channels
     channels_ = AAudioStream_getChannelCount(stream_);
     submitted_frames_ = 0;
 
-    __android_log_print(ANDROID_LOG_INFO, "StreamBridgeAOut",
+    SB_LOG_I("StreamBridgeAOut",
             "AAudio actual: rate=%d ch=%d buf_frames=%d burst=%d",
             sample_rate_, channels_,
             AAudioStream_getBufferSizeInFrames(stream_),

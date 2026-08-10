@@ -2,8 +2,6 @@
 // FFmpeg H.264 video decoder
 // Receives MediaPacket, outputs RGBA VideoFrame (for ANativeWindow rendering)
 
-#include <deque>
-
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libswscale/swscale.h>
@@ -11,6 +9,7 @@ extern "C" {
 
 #include "streambridge/media_errors.h"
 #include "streambridge/media_types.h"
+#include "streambridge/pts_fifo.h"
 
 namespace streambridge::android::ffmpeg {
 
@@ -53,9 +52,8 @@ private:
     int dst_height_ = 0;
     int64_t frame_index_ = 0;
 
-    // PTS queue: H.264 decoder buffers packets, so we track PTS per-packet
-    // and assign to output frames in order
-    std::deque<int64_t> pts_queue_;  // PTS values in microseconds
+    // PTS FIFO: tracks packet PTS → output frame PTS ordering
+    streambridge::PtsFifo pts_fifo_;
 
     // AVFrame -> VideoFrame conversion (via swscale YUV->RGBA)
     streambridge::Result<DecodeResult> frame_to_video_frame(const AVFrame* av_frame, int64_t pts_us);

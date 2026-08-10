@@ -4,7 +4,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
-#include <android/log.h>
+
+#include "streambridge/logging.h"
 
 namespace streambridge::android {
 namespace {
@@ -171,8 +172,7 @@ streambridge::Result<void> NativeVideoRenderer::render_rgba(
                                          WINDOW_FORMAT_RGBA_8888);
         last_buf_width_ = 0;   // mark as set, don't re-call
         last_buf_height_ = 0;
-        __android_log_print(ANDROID_LOG_INFO, "StreamBridgeRender",
-                "buffer geometry set to native size");
+        SB_LOG_I("StreamBridgeRender", "buffer geometry set to native size");
     }
 
     ANativeWindow_Buffer buffer;
@@ -248,7 +248,7 @@ streambridge::Result<void> NativeVideoRenderer::render_rgba(
     // Diagnostic: first frame only
     static int frame_count = 0;
     if (frame_count++ == 0) {
-        __android_log_print(ANDROID_LOG_INFO, "StreamBridgeRender",
+        SB_LOG_I("StreamBridgeRender",
                 "first render: src=%dx%d buf=%dx%d lb=%d,%d %dx%d",
                 src_w, src_h, buf_w, buf_h,
                 lb.x, lb.y, lb.w, lb.h);

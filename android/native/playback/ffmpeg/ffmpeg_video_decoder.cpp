@@ -1,8 +1,7 @@
 #include "ffmpeg_video_decoder.h"
 
-#include <android/log.h>
-
-#include "ffmpeg_raii.h"
+#include "streambridge/ffmpeg_utils.h"
+#include "streambridge/logging.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -14,6 +13,12 @@ extern "C" {
 #include <cstring>
 
 namespace streambridge::android::ffmpeg {
+
+// Common FFmpeg RAII (now in streambridge::)
+using streambridge::make_avcodec;
+using streambridge::make_avframe;
+using streambridge::make_avpacket;
+
 namespace {
 
 static constexpr char kTag[] = "StreamBridgeVDec";
@@ -86,9 +91,9 @@ streambridge::Result<void> FFmpegVideoDecoder::open(const streambridge::StreamIn
     dst_width_ = info.width;
     dst_height_ = info.height;
     frame_index_ = 0;
-    pts_queue_.clear();
+    pts_fifo_.clear();
 
-    __android_log_print(ANDROID_LOG_INFO, kTag,
+    SB_LOG_I(kTag,
             "decoder opened: %dx%d codec_tb=%d/%d",
             dst_width_, dst_height_, codec_tb_.num, codec_tb_.den);
 
@@ -122,7 +127,7 @@ streambridge::Result<void> FFmpegVideoDecoder::send_packet(
 
     // Push PTS to queue BEFORE sending (FIFO: first packet in = first frame out)
     if (packet.has_valid_pts()) {
-        pts_queue_.push_back(packet.pts.us);
+        pts_fifo_.push(packet.pts.us);
     }
 
     avpkt->pts = AV_NOPTS_VALUE;
@@ -133,7 +138,7 @@ streambridge::Result<void> FFmpegVideoDecoder::send_packet(
 
     if (ret < 0 && ret != AVERROR(EAGAIN)) {
         // Send failed: undo the PTS push
-        if (!pts_queue_.empty()) pts_queue_.pop_back();
+        pts_fifo_.pop_back();
         char errbuf[256] = {};
         av_strerror(ret, errbuf, sizeof(errbuf));
         return streambridge::Result<void>::err(
@@ -179,10 +184,7 @@ FFmpegVideoDecoder::receive_frame() {
 
     // Pop PTS from FIFO queue
     int64_t output_pts_us = -1;
-    if (!pts_queue_.empty()) {
-        output_pts_us = pts_queue_.front();
-        pts_queue_.pop_front();
-    }
+    output_pts_us = pts_fifo_.pop();
 
     return frame_to_video_frame(av_frame.get(), output_pts_us);
 }
@@ -226,7 +228,7 @@ void FFmpegVideoDecoder::close() {
         codec_ctx_ = nullptr;
     }
     frame_index_ = 0;
-    pts_queue_.clear();
+    pts_fifo_.clear();
 }
 
 streambridge::Result<FFmpegVideoDecoder::DecodeResult>
@@ -308,11 +310,11 @@ FFmpegVideoDecoder::frame_to_video_frame(const AVFrame* av_frame, int64_t pts_us
     }
 
     if (frame.frame_index < 5) {
-        __android_log_print(ANDROID_LOG_INFO, kTag,
+        SB_LOG_I(kTag,
                 "frame#%lld pts_us=%lld q_depth=%zu",
                 static_cast<long long>(frame.frame_index),
                 static_cast<long long>(frame.pts.us),
-                pts_queue_.size());
+                pts_fifo_.size());
     }
 
     DecodeResult result;
