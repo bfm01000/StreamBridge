@@ -6,95 +6,22 @@
 #include <cstring>
 
 #include "streambridge/logging.h"
+#include "streambridge/video_utils.h"
 
 namespace streambridge::android {
 namespace {
 
-uint32_t pack_rgba(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) {
-    return (static_cast<uint32_t>(a) << 24) |
-           (static_cast<uint32_t>(b) << 16) |
-           (static_cast<uint32_t>(g) << 8) |
-           static_cast<uint32_t>(r);
-}
+using streambridge::pack_rgba;
+using streambridge::calc_letterbox;
+using streambridge::sample_bilinear;
+using streambridge::yuv_to_rgb;
+using streambridge::clamp_u8;
 
 streambridge::Result<void> invalid_frame(const char* message) {
     return streambridge::Result<void>::err(
             streambridge::ErrorDomain::Config,
             streambridge::ErrorCode::InvalidArgument,
             message);
-}
-
-// Calculate letterbox rectangle: fit (src_w, src_h) into (dst_w, dst_h)
-// preserving aspect ratio, centered. Returns offset and scaled size.
-struct LetterBox {
-    int x = 0, y = 0;
-    int w = 0, h = 0;
-};
-
-LetterBox calc_letterbox(int src_w, int src_h, int dst_w, int dst_h) {
-    LetterBox lb;
-    if (src_w <= 0 || src_h <= 0 || dst_w <= 0 || dst_h <= 0) {
-        return lb;
-    }
-
-    double src_ratio = static_cast<double>(src_w) / src_h;
-    double dst_ratio = static_cast<double>(dst_w) / dst_h;
-
-    if (src_ratio > dst_ratio) {
-        // Source wider -> fit by width, pillarbox (black bars top/bottom)
-        lb.w = dst_w;
-        lb.h = static_cast<int>(std::round(dst_w / src_ratio));
-        lb.x = 0;
-        lb.y = (dst_h - lb.h) / 2;
-    } else {
-        // Source taller -> fit by height, letterbox (black bars left/right)
-        lb.w = static_cast<int>(std::round(dst_h * src_ratio));
-        lb.h = dst_h;
-        lb.x = (dst_w - lb.w) / 2;
-        lb.y = 0;
-    }
-
-    // Clamp
-    lb.w = std::max(1, std::min(lb.w, dst_w));
-    lb.h = std::max(1, std::min(lb.h, dst_h));
-    lb.x = std::max(0, std::min(lb.x, dst_w - lb.w));
-    lb.y = std::max(0, std::min(lb.y, dst_h - lb.h));
-
-    return lb;
-}
-
-// Bilinear-scaled pixel fetch from source RGBA image
-inline uint32_t sample_bilinear(const uint8_t* src, int src_stride,
-                                int src_w, int src_h,
-                                float u, float v) {
-    // Clamp to source bounds
-    u = std::max(0.0f, std::min(u, static_cast<float>(src_w - 1)));
-    v = std::max(0.0f, std::min(v, static_cast<float>(src_h - 1)));
-
-    int x0 = static_cast<int>(u);
-    int y0 = static_cast<int>(v);
-    int x1 = std::min(x0 + 1, src_w - 1);
-    int y1 = std::min(y0 + 1, src_h - 1);
-
-    float fx = u - x0;
-    float fy = v - y0;
-
-    const uint8_t* p00 = src + y0 * src_stride + x0 * 4;
-    const uint8_t* p10 = src + y0 * src_stride + x1 * 4;
-    const uint8_t* p01 = src + y1 * src_stride + x0 * 4;
-    const uint8_t* p11 = src + y1 * src_stride + x1 * 4;
-
-    uint8_t r = static_cast<uint8_t>(
-        (1 - fy) * ((1 - fx) * p00[0] + fx * p10[0]) +
-        fy * ((1 - fx) * p01[0] + fx * p11[0]));
-    uint8_t g = static_cast<uint8_t>(
-        (1 - fy) * ((1 - fx) * p00[1] + fx * p10[1]) +
-        fy * ((1 - fx) * p01[1] + fx * p11[1]));
-    uint8_t b = static_cast<uint8_t>(
-        (1 - fy) * ((1 - fx) * p00[2] + fx * p10[2]) +
-        fy * ((1 - fx) * p01[2] + fx * p11[2]));
-
-    return pack_rgba(r, g, b);
 }
 
 }  // namespace
