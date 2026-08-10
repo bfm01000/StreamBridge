@@ -11,7 +11,7 @@ extern "C" {
 #include "streambridge/media_types.h"
 #include "streambridge/pts_fifo.h"
 
-namespace streambridge::android::ffmpeg {
+namespace streambridge::ffmpeg {
 
 class FFmpegAudioDecoder : public streambridge::IAudioDecoder {
 public:
@@ -46,4 +46,4 @@ private:
     Result<DecodeResult> decode_one_frame();
 };
 
-}  // namespace streambridge::android::ffmpeg
+}  // namespace streambridge::ffmpeg

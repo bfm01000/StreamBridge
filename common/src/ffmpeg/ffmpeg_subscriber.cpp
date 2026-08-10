@@ -50,7 +50,7 @@ static bool test_posix_connect(const char* host, int port) {
 
 }  // namespace
 
-namespace streambridge::android::ffmpeg {
+namespace streambridge::ffmpeg {
 namespace {
 
 constexpr char kLogTag[] = "StreamBridgeSub";
@@ -305,4 +305,4 @@ void FFmpegSubscriber::fill_extradata(AVCodecParameters* par, streambridge::Stre
     }
 }
 
-}  // namespace streambridge::android::ffmpeg
+}  // namespace streambridge::ffmpeg

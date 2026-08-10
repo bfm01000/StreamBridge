@@ -2,8 +2,8 @@
 
 #include <cstring>
 
-#include "../ffmpeg/ffmpeg_audio_decoder.h"
-#include "../ffmpeg/ffmpeg_video_decoder.h"
+#include "ffmpeg/ffmpeg_audio_decoder.h"
+#include "ffmpeg/ffmpeg_video_decoder.h"
 #include "streambridge/logging.h"
 
 namespace streambridge::android::mediacodec {
@@ -302,11 +302,11 @@ std::unique_ptr<IVideoDecoder> create_video_decoder(ANativeWindow* surface) {
 
     // Fallback to FFmpeg software decoder
     SB_LOG_I(kTag, "MediaCodec unavailable, using FFmpeg software decoder");
-    return std::make_unique<android::ffmpeg::FFmpegVideoDecoder>();
+    return std::make_unique<streambridge::ffmpeg::FFmpegVideoDecoder>();
 }
 
 std::unique_ptr<IAudioDecoder> create_audio_decoder() {
-    return std::make_unique<android::ffmpeg::FFmpegAudioDecoder>();
+    return std::make_unique<streambridge::ffmpeg::FFmpegAudioDecoder>();
 }
 
 }  // namespace streambridge::android::mediacodec

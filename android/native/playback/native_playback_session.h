@@ -11,8 +11,8 @@
 #include "streambridge/media_queue.h"
 #include "streambridge/session.h"
 
-#include "ffmpeg/ffmpeg_audio_decoder.h"
 #include "ffmpeg/ffmpeg_subscriber.h"
+// (subscriber now in common/src/ffmpeg/, namespace streambridge::ffmpeg)
 #include "mediacodec/mediacodec_video_decoder.h"
 #include "native_audio_output.h"
 #include "native_video_renderer.h"
@@ -61,7 +61,7 @@ private:
     std::atomic<bool> stop_in_progress_{false};   // guard against double-stop
 
     // Components
-    ffmpeg::FFmpegSubscriber subscriber_;
+    streambridge::ffmpeg::FFmpegSubscriber subscriber_;
     std::unique_ptr<streambridge::IVideoDecoder> video_decoder_;
     std::unique_ptr<streambridge::IAudioDecoder> audio_decoder_;
     NativeVideoRenderer renderer_;

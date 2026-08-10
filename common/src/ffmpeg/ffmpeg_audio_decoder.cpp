@@ -12,7 +12,7 @@ extern "C" {
 
 #include <cstring>
 
-namespace streambridge::android::ffmpeg {
+namespace streambridge::ffmpeg {
 
 using streambridge::make_avcodec;
 using streambridge::make_avframe;
@@ -290,4 +290,4 @@ void FFmpegAudioDecoder::flush() {
     pts_fifo_.clear();
 }
 
-}  // namespace streambridge::android::ffmpeg
+}  // namespace streambridge::ffmpeg

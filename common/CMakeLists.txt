@@ -11,13 +11,19 @@ add_library(sb_common STATIC
     src/logging.cpp
     src/session_impl.cpp
     src/session_utils.cpp
+    src/ffmpeg/ffmpeg_video_decoder.cpp
+    src/ffmpeg/ffmpeg_audio_decoder.cpp
+    src/ffmpeg/ffmpeg_subscriber.cpp
+    src/ffmpeg/ffmpeg_video_encoder.cpp
+    src/ffmpeg/ffmpeg_audio_encoder.cpp
+    src/ffmpeg/ffmpeg_rtmp_publisher.cpp
 )
 
 target_include_directories(sb_common PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-# POSIX for monotonic clock + logging
 target_link_libraries(sb_common PUBLIC
     Threads::Threads
 )

@@ -4,9 +4,6 @@ add_library(sb_linux_platform STATIC
     capture/ffmpeg_audio_capture.cpp
     capture/alsa_audio_capture.cpp
     capture/v4l2_video_capture.cpp
-    encode/ffmpeg_video_encoder.cpp
-    encode/ffmpeg_audio_encoder.cpp
-    publish/ffmpeg_rtmp_publisher.cpp
 )
 
 target_link_libraries(sb_linux_platform PUBLIC
@@ -16,7 +13,7 @@ target_link_libraries(sb_linux_platform PUBLIC
     Threads::Threads
 )
 
-# ALSA 可选依赖
+# ALSA optional dependency
 if(ALSA_FOUND)
     target_compile_definitions(sb_linux_platform PUBLIC STREAMBRIDGE_HAS_ALSA=1)
     target_link_libraries(sb_linux_platform PUBLIC ${ALSA_LIBRARIES})

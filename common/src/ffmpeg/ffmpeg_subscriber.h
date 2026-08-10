@@ -12,7 +12,7 @@ extern "C" {
 #include "streambridge/media_errors.h"
 #include "streambridge/media_types.h"
 
-namespace streambridge::android::ffmpeg {
+namespace streambridge::ffmpeg {
 
 class FFmpegSubscriber {
 public:
@@ -68,4 +68,4 @@ private:
     static void fill_extradata(AVCodecParameters* par, streambridge::StreamInfo& info);
 };
 
-}  // namespace streambridge::android::ffmpeg
+}  // namespace streambridge::ffmpeg

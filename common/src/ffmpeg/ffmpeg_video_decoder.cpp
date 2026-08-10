@@ -12,7 +12,7 @@ extern "C" {
 
 #include <cstring>
 
-namespace streambridge::android::ffmpeg {
+namespace streambridge::ffmpeg {
 
 using streambridge::make_avcodec;
 using streambridge::make_avframe;
@@ -332,4 +332,4 @@ Result<VideoFrame> FFmpegVideoDecoder::avframe_to_video_frame(
     return Result<VideoFrame>::ok(std::move(frame));
 }
 
-}  // namespace streambridge::android::ffmpeg
+}  // namespace streambridge::ffmpeg

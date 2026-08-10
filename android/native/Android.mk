@@ -37,23 +37,24 @@ LOCAL_MODULE := streambridge_android
 LOCAL_SRC_FILES := \
     jni/streambridge_jni.cpp \
     platform/android_logging.cpp \
-    playback/ffmpeg/ffmpeg_subscriber.cpp \
-    playback/ffmpeg/ffmpeg_video_decoder.cpp \
-    playback/ffmpeg/ffmpeg_audio_decoder.cpp \
     playback/mediacodec/mediacodec_video_decoder.cpp \
     playback/native_audio_output.cpp \
     playback/native_playback_session.cpp \
     playback/native_video_renderer.cpp \
     ../../common/src/av_sync.cpp \
     ../../common/src/ffmpeg_utils.cpp \
+    ../../common/src/ffmpeg/ffmpeg_video_decoder.cpp \
+    ../../common/src/ffmpeg/ffmpeg_audio_decoder.cpp \
+    ../../common/src/ffmpeg/ffmpeg_subscriber.cpp \
     ../../common/src/session_utils.cpp
 
 LOCAL_C_INCLUDES := \
     $(LOCAL_PATH)/playback \
     $(LOCAL_PATH)/../../common/include \
+    $(LOCAL_PATH)/../../common/src \
     $(LOCAL_PATH)/../../third_party/ffmpeg-android/arm64-v8a/include
 
-LOCAL_CPPFLAGS := -std=c++17 -Wall -Wextra -Werror -DSTREAMBRIDGE_BUILD_VERSION=\"2026-08-10-38\"
+LOCAL_CPPFLAGS := -std=c++17 -Wall -Wextra -Werror -DSTREAMBRIDGE_BUILD_VERSION=\"2026-08-10-39\"
 LOCAL_LDLIBS := -laaudio -landroid -llog -lmediandk
 
 LOCAL_SHARED_LIBRARIES := avformat avcodec swscale swresample avutil

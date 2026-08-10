@@ -11,7 +11,7 @@ extern "C" {
 #include "streambridge/media_types.h"
 #include "streambridge/pts_fifo.h"
 
-namespace streambridge::android::ffmpeg {
+namespace streambridge::ffmpeg {
 
 class FFmpegVideoDecoder : public streambridge::IVideoDecoder {
 public:
@@ -58,4 +58,4 @@ private:
     Result<VideoFrame> avframe_to_video_frame(const AVFrame* av_frame, int64_t pts_us);
 };
 
-}  // namespace streambridge::android::ffmpeg
+}  // namespace streambridge::ffmpeg
