@@ -118,8 +118,8 @@ void NativePlaybackSession::stop() {
     if (audio_thread_.joinable()) audio_thread_.join();
 
     subscriber_.close();
-    video_decoder_.close();
-    audio_decoder_.close();
+    video_decoder_->close();
+    audio_decoder_->close();
     audio_output_.close();
     clock_.reset();
 
@@ -382,7 +382,18 @@ void NativePlaybackSession::video_loop() {
             static_cast<int>(video_info_copy.codec),
             video_info_copy.width, video_info_copy.height);
 
-    auto open_result = video_decoder_.open(video_info_copy);
+    // Create decoder via factory (MediaCodec preferred, FFmpeg fallback)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        video_decoder_ = streambridge::android::mediacodec::create_video_decoder(
+            renderer_.window());
+    }
+    if (!video_decoder_) {
+        set_error("failed to create video decoder");
+        return;
+    }
+
+    auto open_result = video_decoder_->open(video_info_copy);
     if (open_result.is_err()) {
         set_error(open_result.error_message());
         return;
@@ -399,22 +410,34 @@ void NativePlaybackSession::video_loop() {
         if (pop_result == streambridge::QueueResult::Timeout) continue;
 
         // Send packet once (PTS pushed to FIFO queue inside send_packet)
-        auto send_result = video_decoder_.send_packet(packet);
+        auto send_result = video_decoder_->send_packet(packet);
         if (send_result.is_err()) {
             set_error(send_result.error_message());
             return;
         }
 
-        // Receive all frames that are ready
+        // Dequeue decoded output (frame cached inside decoder)
         while (!is_stopping()) {
-            auto dec_result = video_decoder_.receive_frame();
+            auto dec_result = video_decoder_->dequeue_output(
+                kPacketPopTimeoutMs * 1000);
             if (dec_result.is_err()) {
                 set_error(dec_result.error_message());
                 return;
             }
-            if (!dec_result->has_frame) break;  // EAGAIN
+            if (!dec_result->has_output) break;  // no frame ready
 
-            auto& frame = dec_result->frame;
+            // CPU mode: retrieve frame data
+            auto frame_result = video_decoder_->receive_frame(dec_result->output_index);
+            if (frame_result.is_err()) {
+                set_error(frame_result.error_message());
+                return;
+            }
+            if (!frame_result->has_frame) {
+                video_decoder_->release_output(dec_result->output_index, false);
+                continue;
+            }
+
+            auto& frame = frame_result->frame;
 
             // Normalize PTS to first frame
             if (first_video_pts_us_ >= 0 && frame.pts.us > 0) {
@@ -432,23 +455,21 @@ void NativePlaybackSession::video_loop() {
             }
 
             if (sync.action == streambridge::VideoSyncAction::Drop) {
-                // Frame too far behind audio -> skip
                 std::lock_guard<std::mutex> lock(mutex_);
                 ++video_frames_dropped_;
+                video_decoder_->release_output(dec_result->output_index, false);
                 continue;
             }
 
             if (sync.action == streambridge::VideoSyncAction::Wait) {
-                // Frame ahead of audio -> sleep and retry
-                // Cap sleep to avoid oversleeping
                 int64_t sleep_us = std::min(sync.wait_us, kPacketPopTimeoutMs * 1000L);
                 std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
-                // Re-check clock after sleep
                 master_clock = clock_.now();
                 sync = sync_controller_.decide(frame.pts, master_clock);
                 if (sync.action == streambridge::VideoSyncAction::Drop) {
                     std::lock_guard<std::mutex> lock(mutex_);
                     ++video_frames_dropped_;
+                    video_decoder_->release_output(dec_result->output_index, false);
                     continue;
                 }
             }
@@ -485,6 +506,9 @@ void NativePlaybackSession::video_loop() {
                 ++video_frames_rendered_;
             }
 
+            // Release frame (CPU mode: no-op; Surface mode: render to Surface)
+            video_decoder_->release_output(dec_result->output_index, false);
+
             // Periodic stability log (every ~5s of media time)
             {
                 static int64_t last_log_pts_us = 0;
@@ -507,11 +531,10 @@ void NativePlaybackSession::video_loop() {
 
     // Drain decoder
     while (!is_stopping()) {
-        auto drain_result = video_decoder_.drain();
-        if (drain_result.is_err() || !drain_result->has_frame) break;
+        video_decoder_->drain();
     }
 
-    video_decoder_.close();
+    video_decoder_->close();
     log_info("video thread exiting");
 }
 
@@ -547,7 +570,14 @@ void NativePlaybackSession::audio_loop() {
         audio_info_copy = *audio_info_;
     }
 
-    auto open_result = audio_decoder_.open(audio_info_copy);
+    // Create audio decoder (FFmpeg AAC)
+    audio_decoder_ = streambridge::android::mediacodec::create_audio_decoder();
+    if (!audio_decoder_) {
+        set_error("failed to create audio decoder");
+        return;
+    }
+
+    auto open_result = audio_decoder_->open(audio_info_copy);
     if (open_result.is_err()) {
         set_error(open_result.error_message());
         return;
@@ -571,7 +601,7 @@ void NativePlaybackSession::audio_loop() {
         if (pop_result == streambridge::QueueResult::Timeout) continue;
 
         // Send packet once (PTS pushed to FIFO queue inside send_packet)
-        auto send_result = audio_decoder_.send_packet(packet);
+        auto send_result = audio_decoder_->send_packet(packet);
         if (send_result.is_err()) {
             set_error(send_result.error_message());
             return;
@@ -579,7 +609,7 @@ void NativePlaybackSession::audio_loop() {
 
         // Receive all ready frames
         while (!is_stopping()) {
-            auto dec_result = audio_decoder_.receive_frame();
+            auto dec_result = audio_decoder_->receive_frame();
             if (dec_result.is_err()) {
                 set_error(dec_result.error_message());
                 return;
@@ -609,12 +639,9 @@ void NativePlaybackSession::audio_loop() {
         }
     }
 
-    while (!is_stopping()) {
-        auto drain_result = audio_decoder_.drain();
-        if (drain_result.is_err() || !drain_result->has_frame) break;
-    }
+    audio_decoder_->drain();
 
-    audio_decoder_.close();
+    audio_decoder_->close();
     audio_output_.close();
     log_info("audio thread exiting");
 }

@@ -19,6 +19,7 @@ public:
     void set_surface(ANativeWindow* window);
     void clear_surface();
     streambridge::Result<void> render(const streambridge::VideoFrame& frame);
+    ANativeWindow* window() const { return window_; }
 
 private:
     streambridge::Result<void> render_rgba(const streambridge::VideoFrame& frame,

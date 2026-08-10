@@ -107,36 +107,85 @@ public:
 };
 
 // ============================================================
-// 解码器接口（播放端用，M4 实现）
+// 解码器接口
 // ============================================================
+
+// 解码器输出信息（不包含像素/采样数据——零拷贝友好）
+struct DecodeOutputInfo {
+    bool has_output = false;
+    int64_t pts_us = -1;
+    int64_t duration_us = -1;
+    int output_index = -1;  // decoder-specific handle for release_output
+};
+
+// 视频解码器统一接口
+// FFmpeg 软解和 MediaCodec 硬解均实现此接口
 class IVideoDecoder {
 public:
     virtual ~IVideoDecoder() = default;
 
-    virtual Result<void> open(const VideoDecodeConfig& config,
-                              const StreamInfo& stream_info) = 0;
-    virtual Result<std::vector<VideoFrame>> decode(MediaPacket packet) = 0;
-    virtual Result<std::vector<VideoFrame>> drain() = 0;
-    virtual void flush() = 0;
-    virtual void close() = 0;
+    enum class OutputMode {
+        CpuFrame,   // 解码帧落在 CPU 内存，通过 receive_frame() 取出
+        Surface,    // 解码帧直接渲染到 Surface，零拷贝
+    };
 
-    virtual DecodeCapability capability() const = 0;
+    // --- 生命周期 ---
+    virtual Result<void> open(const StreamInfo& info) = 0;
+    virtual void close() = 0;
     virtual bool is_open() const = 0;
+
+    // --- 数据路径（两个模式通用）---
+    // 喂入编码包；可多次调用，解码器内部缓冲
+    virtual Result<void> send_packet(const MediaPacket& packet) = 0;
+
+    // 取出下一帧的输出信息（阻塞或超时返回 has_output=false）
+    virtual Result<DecodeOutputInfo> dequeue_output(int64_t timeout_us) = 0;
+
+    // 释放/渲染输出帧
+    // CpuFrame 模式：render 参数无意义（帧已通过 receive_frame 取出）
+    // Surface 模式：render=true 提交到 Surface，render=false 丢弃
+    virtual void release_output(int output_index, bool render) = 0;
+
+    // 冲刷解码器缓冲（发送 null packet，取回残余帧）
+    virtual Result<void> drain() = 0;
+
+    // 清空内部缓冲（用于 seek / reconnect）
+    virtual void flush() = 0;
+
+    // --- 能力查询 ---
+    virtual OutputMode output_mode() const = 0;
+    virtual DecodeCapability capability() const = 0;
+
+    // --- CPU 模式专用 ---
+    struct CpuFrameResult {
+        bool has_frame = false;
+        VideoFrame frame;
+    };
+    // 从 output_index 取出解码帧数据（调用后应 release_output(index, false)）
+    virtual Result<CpuFrameResult> receive_frame(int output_index) = 0;
 };
 
+// 音频解码器接口
 class IAudioDecoder {
 public:
     virtual ~IAudioDecoder() = default;
 
-    virtual Result<void> open(const AudioDecodeConfig& config,
-                              const StreamInfo& stream_info) = 0;
-    virtual Result<std::vector<AudioFrame>> decode(MediaPacket packet) = 0;
-    virtual Result<std::vector<AudioFrame>> drain() = 0;
-    virtual void flush() = 0;
+    virtual Result<void> open(const StreamInfo& info) = 0;
     virtual void close() = 0;
+    virtual bool is_open() const = 0;
+
+    virtual Result<void> send_packet(const MediaPacket& packet) = 0;
+
+    struct DecodeResult {
+        bool has_frame = false;
+        AudioFrame frame;
+    };
+    virtual Result<DecodeResult> receive_frame() = 0;
+
+    virtual Result<void> drain() = 0;
+    virtual void flush() = 0;
 
     virtual DecodeCapability capability() const = 0;
-    virtual bool is_open() const = 0;
 };
 
 }  // namespace streambridge

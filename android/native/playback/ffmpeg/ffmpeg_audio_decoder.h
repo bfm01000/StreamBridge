@@ -1,47 +1,37 @@
 #pragma once
-// FFmpeg AAC audio decoder
-// Receives MediaPacket, outputs S16 interleaved AudioFrame (for AAudio output)
+// FFmpeg AAC audio decoder — implements common IAudioDecoder
 
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libswresample/swresample.h>
 }
 
+#include "streambridge/codec.h"
 #include "streambridge/media_errors.h"
 #include "streambridge/media_types.h"
 #include "streambridge/pts_fifo.h"
 
 namespace streambridge::android::ffmpeg {
 
-class FFmpegAudioDecoder {
+class FFmpegAudioDecoder : public streambridge::IAudioDecoder {
 public:
     FFmpegAudioDecoder();
-    ~FFmpegAudioDecoder();
+    ~FFmpegAudioDecoder() override;
 
     FFmpegAudioDecoder(const FFmpegAudioDecoder&) = delete;
     FFmpegAudioDecoder& operator=(const FFmpegAudioDecoder&) = delete;
 
-    // Initialize AAC decoder with stream info
-    streambridge::Result<void> open(const streambridge::StreamInfo& info);
+    // --- IAudioDecoder interface ---
+    Result<void> open(const StreamInfo& info) override;
+    void close() override;
+    bool is_open() const override { return codec_ctx_ != nullptr; }
 
-    // Send one packet to decoder (pushes PTS to FIFO queue)
-    streambridge::Result<void> send_packet(const streambridge::MediaPacket& packet);
+    Result<void> send_packet(const MediaPacket& packet) override;
+    Result<DecodeResult> receive_frame() override;
+    Result<void> drain() override;
+    void flush() override;
 
-    // Receive one decoded frame (pops PTS from FIFO queue)
-    struct DecodeResult {
-        bool has_frame = false;
-        streambridge::AudioFrame frame;
-    };
-    streambridge::Result<DecodeResult> receive_frame();
-
-    // Combined: send + receive (for backward compatibility / simple cases)
-    streambridge::Result<DecodeResult> decode(const streambridge::MediaPacket& packet);
-
-    // Flush decoder
-    streambridge::Result<DecodeResult> drain();
-
-    void close();
-    bool is_open() const { return codec_ctx_ != nullptr; }
+    DecodeCapability capability() const override;
 
 private:
     AVCodecContext* codec_ctx_ = nullptr;
@@ -50,13 +40,10 @@ private:
     int dst_sample_rate_ = 0;
     int dst_channels_ = 0;
     int64_t frame_index_ = 0;
+    PtsFifo pts_fifo_;
 
-    // PTS FIFO: tracks packet PTS → output frame PTS ordering
-    streambridge::PtsFifo pts_fifo_;
-
-    // AVFrame -> AudioFrame conversion (via swresample FLTP->S16)
-    streambridge::Result<DecodeResult> frame_to_audio_frame(const AVFrame* av_frame,
-                                                             int64_t pts_us);
+    // Internal decode + convert
+    Result<DecodeResult> decode_one_frame();
 };
 
 }  // namespace streambridge::android::ffmpeg

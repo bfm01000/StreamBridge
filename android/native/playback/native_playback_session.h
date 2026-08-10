@@ -13,7 +13,7 @@
 
 #include "ffmpeg/ffmpeg_audio_decoder.h"
 #include "ffmpeg/ffmpeg_subscriber.h"
-#include "ffmpeg/ffmpeg_video_decoder.h"
+#include "mediacodec/mediacodec_video_decoder.h"
 #include "native_audio_output.h"
 #include "native_video_renderer.h"
 
@@ -62,8 +62,8 @@ private:
 
     // Components
     ffmpeg::FFmpegSubscriber subscriber_;
-    ffmpeg::FFmpegVideoDecoder video_decoder_;
-    ffmpeg::FFmpegAudioDecoder audio_decoder_;
+    std::unique_ptr<streambridge::IVideoDecoder> video_decoder_;
+    std::unique_ptr<streambridge::IAudioDecoder> audio_decoder_;
     NativeVideoRenderer renderer_;
     NativeAudioOutput audio_output_;
     streambridge::MediaClock clock_;
