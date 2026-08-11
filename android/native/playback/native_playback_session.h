@@ -16,6 +16,7 @@
 #include "mediacodec/mediacodec_video_decoder.h"
 #include "native_audio_output.h"
 #include "native_video_renderer.h"
+#include "playback_metrics.h"
 
 namespace streambridge::android {
 
@@ -79,12 +80,7 @@ private:
     std::thread video_thread_;
     std::thread audio_thread_;
 
-    // Metrics (for status_text)
-    int64_t video_frames_rendered_ = 0;
-    int64_t video_frames_dropped_ = 0;
-    int64_t audio_frames_output_ = 0;
-    int64_t last_av_diff_us_ = 0;
-    streambridge::VideoSyncAction last_sync_action_ = streambridge::VideoSyncAction::Render;
+    PlaybackMetrics metrics_;
 
     // First PTS for normalization (demux writes, decode reads)
     std::atomic<int64_t> first_video_pts_us_{-1};
