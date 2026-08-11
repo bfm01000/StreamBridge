@@ -81,8 +81,7 @@ struct AudioDecodeConfig {
 // ============================================================
 // 编码器接口
 // ============================================================
-// 视频编码器抽象接口：送原始帧 → 输出编码 MediaPacket
-    // 视频编码抽象接口：编码/刷新/关闭，输出 MediaPacket 列表
+// 视频编码抽象接口：编码/刷新/关闭，输出 MediaPacket 列表
 class IVideoEncoder {
 public:
     virtual ~IVideoEncoder() = default;
@@ -137,19 +136,21 @@ struct DecoderCapability {
 
 // ── Frame handles（标记联合，编译期保证只有一个分支有效）──
 
-// CPU 帧：shared_ptr owning，Session/Renderer 持有最后一个引用时自动释放
+// CPU 帧句柄：shared_ptr 持有，最后一个引用释放时自动回收内存
 struct CpuFrameHandle {
     std::shared_ptr<CpuFrameBuffer> buffer;
     VideoFrame frame;
 };
 
-// Surface 输出：opaque，Session 不需要知道 ANativeWindow*
+// Surface 输出句柄：不透明类型，Session 无需感知具体平台窗口
 struct DecoderSurfaceHandle {};
 
-// 未来：DMA-BUF、GPU Texture
+// DMA-BUF 帧句柄：外接显存 fd 描述（预留）
 struct DmaBufFrameHandle { /* fd, planes, stride, modifier */ };
+// GPU 纹理句柄：纹理 ID 引用（预留）
 struct GpuTextureHandle { /* texture_id */ };
 
+// 解码输出载荷：标记联合，只含一种有效的帧句柄
 using FramePayload = std::variant<
     CpuFrameHandle,
     DecoderSurfaceHandle,
@@ -157,14 +158,14 @@ using FramePayload = std::variant<
     GpuTextureHandle
 >;
 
-// 统一解码输出
+// 统一解码输出：帧 ID、PTS 与具体帧载荷
 struct DecodeOutput {
     uint64_t frame_id = 0;
     int64_t pts_us = 0;
     FramePayload payload;
 };
 
-// 视频解码器统一接口
+// 视频解码抽象接口：送包取帧、帧提交/丢弃与能力查询
 class IVideoDecoder {
 public:
     virtual ~IVideoDecoder() = default;
@@ -192,7 +193,7 @@ public:
     virtual DecoderCapability capability() const = 0;
 };
 
-// 音频解码器接口（本次不变）
+// 音频解码抽象接口：送包取帧、刷新与能力查询
 class IAudioDecoder {
 public:
     virtual ~IAudioDecoder() = default;
