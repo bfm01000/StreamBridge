@@ -20,6 +20,7 @@ using CaptureErrorCallback = std::function<void(ErrorDomain, ErrorCode, std::str
 // ============================================================
 // 采集能力
 // ============================================================
+// 视频采集设备能力：设备标识、支持的分辨率/像素格式/帧率列表
 struct VideoCaptureCapability {
     std::string device_id;
     std::string device_path;
@@ -29,6 +30,7 @@ struct VideoCaptureCapability {
     std::vector<int> frame_rates;
 };
 
+// 音频采集设备能力：支持的采样率/声道数/采样格式列表
 struct AudioCaptureCapability {
     std::string device_id;
     std::string device_path;
@@ -40,6 +42,7 @@ struct AudioCaptureCapability {
 // ============================================================
 // 采集配置
 // ============================================================
+// 视频采集配置：输入源、目标分辨率/帧率/像素格式
 struct VideoCaptureConfig {
     std::string source;  // 文件路径 / lavfi 描述 / V4L2 设备路径
     int target_width = 1280;
@@ -49,6 +52,7 @@ struct VideoCaptureConfig {
     bool loop = false;
 };
 
+// 音频采集配置：输入源、目标采样率/声道数/采样格式/帧大小
 struct AudioCaptureConfig {
     std::string source;
     int target_sample_rate = 48000;
@@ -61,6 +65,7 @@ struct AudioCaptureConfig {
 // ============================================================
 // 采集接口
 // ============================================================
+// 视频采集抽象接口：open/start/stop/close，通过回调输出 VideoFrame
 class IVideoCapture {
 public:
     virtual ~IVideoCapture() = default;
@@ -78,6 +83,7 @@ public:
     virtual bool is_running() const = 0;
 };
 
+// 音频采集抽象接口：open/start/stop/close，通过回调输出 AudioFrame
 class IAudioCapture {
 public:
     virtual ~IAudioCapture() = default;

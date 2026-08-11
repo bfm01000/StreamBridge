@@ -9,6 +9,7 @@
 
 namespace streambridge {
 
+// 推流配置：RTMP 地址、封装格式与连接/写入超时
 struct PublishConfig {
     std::string url;                  // rtmp://127.0.0.1:1935/live/stream0
     std::string format = "flv";
@@ -16,6 +17,7 @@ struct PublishConfig {
     int write_timeout_ms = 5'000;
 };
 
+// 拉流配置：RTMP 地址、超时与缓冲时长
 struct SubscribeConfig {
     std::string url;
     int connect_timeout_ms = 10'000;
@@ -23,6 +25,7 @@ struct SubscribeConfig {
     int64_t buffer_duration_us = 2'000'000;
 };
 
+// 推流传输抽象：写 FLV 头与媒体包，支持中断与统计
 class IMediaPublisher {
 public:
     virtual ~IMediaPublisher() = default;
@@ -43,6 +46,7 @@ public:
     virtual Stats stats() const = 0;
 };
 
+// 拉流传输抽象：读流头与媒体包，支持中断与统计
 class IMediaSubscriber {
 public:
     virtual ~IMediaSubscriber() = default;

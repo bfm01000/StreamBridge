@@ -9,6 +9,7 @@
 
 namespace streambridge::android {
 
+// 播放链路运行指标统计：记录喂包/解码/渲染/丢帧数量与 A/V 同步差值，供状态展示和诊断使用。
 class PlaybackMetrics {
 public:
     void reset();

@@ -5,6 +5,7 @@
 
 namespace streambridge {
 
+// 基于 FFmpeg 的 AAC 音频编码器，实现 IAudioEncoder 接口
 class FFmpegAudioEncoder : public IAudioEncoder {
 public:
     FFmpegAudioEncoder();

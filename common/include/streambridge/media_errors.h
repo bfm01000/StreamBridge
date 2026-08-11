@@ -116,6 +116,7 @@ inline const char* error_code_name(ErrorCode code) {
 // 2. Result<T> — 带错误上下文的结果类型
 // ============================================================
 
+// 通用结果类型：成功时持有值，失败时携带错误域/错误码/错误消息
 template<typename T>
 class Result {
 public:
@@ -178,7 +179,7 @@ private:
     bool is_ok_ = false;
 };
 
-// void 特化 — 用于只关心成功/失败的操作
+// Result<void> 特化：不携带值，仅表达成功/失败与错误上下文
 template<>
 class Result<void> {
 public:

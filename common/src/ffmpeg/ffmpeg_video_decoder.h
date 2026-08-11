@@ -15,6 +15,7 @@ extern "C" {
 
 namespace streambridge::ffmpeg {
 
+// 基于 FFmpeg 的 H.264 视频解码器，实现 IVideoDecoder 接口并输出 CPU 帧
 class FFmpegVideoDecoder : public streambridge::IVideoDecoder {
 public:
     FFmpegVideoDecoder();

@@ -18,6 +18,7 @@
 
 namespace streambridge::android::mediacodec {
 
+// MediaCodec H.264 视频解码器：实现 IVideoDecoder，解码输出直接渲染到 Surface，支持重配与刷新。
 class MediaCodecVideoDecoder : public streambridge::IVideoDecoder {
 public:
     MediaCodecVideoDecoder();

@@ -561,6 +561,15 @@ shared/interface-contract
 - 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功；APK 成功安装到设备 `84d32674`。
 - 后续原则：追实时只能丢解码后的 video frame，不能静默丢解码前 H.264/AAC packet；如果要跳过大量延迟，必须 flush decoder 并等待下一个 keyframe 重新同步。
 
+### 2026-08-11 Android AI Playback Structure Optimization Phase 1
+
+- 完成内容：开始拆薄 `NativePlaybackSession`，先抽出低风险结构模块：播放常量、压缩 packet 队列配置、播放指标、重连计数/延迟策略。
+- 修改内容：`NativePlaybackSession` 不再内联压缩 packet 队列配置；`status_text()` 改为从 `PlaybackMetrics` 汇总；视频 packet/feed、解码帧、present、drop、音频输出、同步状态统一写入 metrics；demux 重连次数和延迟由 `PlaybackReconnectController` 管理。
+- 修改文件：`android/native/playback/playback_constants.h`、`android/native/playback/playback_queue_config.h/.cpp`、`android/native/playback/playback_metrics.h/.cpp`、`android/native/playback/playback_reconnect_controller.h/.cpp`、`android/native/playback/native_playback_session.h/.cpp`、`android/native/Android.mk`、`android/native/CMakeLists.txt`、`docs/AI_COLLABORATION.md`。
+- 行为边界：本阶段不改变播放行为、不改变 MediaCodec zero-copy 优先策略、不改变 FFmpeg fallback、不改变压缩 packet 不丢包策略；只是把策略和指标从 Session 中剥离。
+- 验证结果：按用户要求本轮未构建、未安装；仅做静态文本检查，确认旧 metrics 成员引用已移除，新 cpp 已加入 Android 构建脚本。
+- 下一步建议：第二阶段再拆 `DemuxWorker`，把 `FFmpegSubscriber`、RTMP read loop、packet push、connection_lost 逻辑从 Session 中移出。
+
 ## 10. Update Checklist
 
 每轮结束前检查：

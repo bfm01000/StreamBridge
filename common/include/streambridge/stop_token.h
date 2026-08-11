@@ -6,6 +6,7 @@
 
 namespace streambridge {
 
+// 取消令牌：查询停止请求，供 FFmpeg interrupt 回调轮询
 class StopToken {
 public:
     StopToken() : flag_(nullptr) {}
@@ -28,6 +29,7 @@ private:
     std::shared_ptr<std::atomic<bool>> flag_;
 };
 
+// 取消源：请求停止并派发令牌，支持重置用于重连
 class StopSource {
 public:
     StopSource() : flag_(std::make_shared<std::atomic<bool>>(false)) {}

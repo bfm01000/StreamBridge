@@ -24,6 +24,7 @@ namespace streambridge {
 // RAII deleters + unique_ptr aliases
 // ============================================================
 
+// RAII：avformat_close_input 释放格式上下文（含输入流资源）
 struct AVFormatContextDeleter {
     void operator()(AVFormatContext* p) const {
         if (p) avformat_close_input(&p);
@@ -31,6 +32,7 @@ struct AVFormatContextDeleter {
 };
 using AVFormatContextPtr = std::unique_ptr<AVFormatContext, AVFormatContextDeleter>;
 
+// RAII：avcodec_free_context 释放编解码器上下文
 struct AVCodecContextDeleter {
     void operator()(AVCodecContext* p) const {
         if (p) avcodec_free_context(&p);
@@ -38,6 +40,7 @@ struct AVCodecContextDeleter {
 };
 using AVCodecContextPtr = std::unique_ptr<AVCodecContext, AVCodecContextDeleter>;
 
+// RAII：av_frame_free 释放 AVFrame
 struct AVFrameDeleter {
     void operator()(AVFrame* p) const {
         if (p) av_frame_free(&p);
@@ -45,6 +48,7 @@ struct AVFrameDeleter {
 };
 using AVFramePtr = std::unique_ptr<AVFrame, AVFrameDeleter>;
 
+// RAII：av_packet_free 释放 AVPacket
 struct AVPacketDeleter {
     void operator()(AVPacket* p) const {
         if (p) av_packet_free(&p);
@@ -52,6 +56,7 @@ struct AVPacketDeleter {
 };
 using AVPacketPtr = std::unique_ptr<AVPacket, AVPacketDeleter>;
 
+// RAII：sws_freeContext 释放像素格式转换上下文
 struct SwsContextDeleter {
     void operator()(SwsContext* p) const {
         if (p) sws_freeContext(p);
@@ -59,6 +64,7 @@ struct SwsContextDeleter {
 };
 using SwsContextPtr = std::unique_ptr<SwsContext, SwsContextDeleter>;
 
+// RAII：swr_free 释放重采样上下文
 struct SwrContextDeleter {
     void operator()(SwrContext* p) const {
         if (p) swr_free(&p);

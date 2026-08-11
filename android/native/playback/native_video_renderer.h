@@ -8,6 +8,7 @@
 
 namespace streambridge::android {
 
+// ANativeWindow 视频渲染器：负责在 Surface 上渲染 RGBA 与 YUV420P 视频帧，并管理窗口生命周期。
 class NativeVideoRenderer {
 public:
     NativeVideoRenderer();

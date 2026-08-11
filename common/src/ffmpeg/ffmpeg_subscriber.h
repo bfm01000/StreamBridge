@@ -15,6 +15,7 @@ extern "C" {
 
 namespace streambridge::ffmpeg {
 
+// 基于 FFmpeg 的 RTMP 拉流订阅端，负责解封装并输出公共 MediaPacket
 class FFmpegSubscriber {
 public:
     FFmpegSubscriber();

@@ -9,6 +9,7 @@
 
 namespace streambridge::android::mediacodec {
 
+// MediaCodec 的 CSD 数据载体：保存由 CodecConfig 参数集转换出的 csd-0/csd-1 缓冲区。
 struct MediaCodecCsd {
     std::vector<uint8_t> csd_0;
     std::vector<uint8_t> csd_1;  // PPS for H.264; empty for H.265

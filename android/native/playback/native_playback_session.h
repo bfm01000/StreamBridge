@@ -20,6 +20,7 @@
 
 namespace streambridge::android {
 
+// Android 播放会话：编排解封装、音视频解码、同步与渲染各线程，并维护 Session 状态机与生命周期。
 class NativePlaybackSession {
 public:
     NativePlaybackSession();

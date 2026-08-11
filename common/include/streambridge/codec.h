@@ -15,6 +15,7 @@ namespace streambridge {
 // ============================================================
 // 编码能力
 // ============================================================
+// 编码器能力：编码格式、硬件加速标记、输入像素/采样格式与码率范围
 struct CodecCapability {
     CodecId codec = CodecId::Unknown;
     bool is_hardware = false;
@@ -26,6 +27,7 @@ struct CodecCapability {
     int64_t max_bitrate = 0;
 };
 
+// 解码器能力：解码格式、硬件加速标记与输出像素/采样格式
 struct DecodeCapability {
     CodecId codec = CodecId::Unknown;
     bool is_hardware = false;
@@ -37,6 +39,7 @@ struct DecodeCapability {
 // ============================================================
 // 编码/解码配置
 // ============================================================
+// 视频编码配置：H.264 参数（分辨率、帧率、码率、GOP、profile）
 struct VideoEncodeConfig {
     CodecId codec = CodecId::H264;
     int width = 1280;
@@ -52,6 +55,7 @@ struct VideoEncodeConfig {
     int thread_count = 2;
 };
 
+// 音频编码配置：AAC 参数（采样率、声道、码率、帧大小）
 struct AudioEncodeConfig {
     CodecId codec = CodecId::AAC;
     int sample_rate = 48000;
@@ -61,12 +65,14 @@ struct AudioEncodeConfig {
     int frame_size = 1024;
 };
 
+// 视频解码配置：解码格式、线程数与输出像素格式
 struct VideoDecodeConfig {
     CodecId codec = CodecId::H264;
     std::optional<int> thread_count;
     PixelFormat output_format = PixelFormat::YUV420P;
 };
 
+// 音频解码配置：解码格式与输出采样格式
 struct AudioDecodeConfig {
     CodecId codec = CodecId::AAC;
     SampleFormat output_format = SampleFormat::S16;
@@ -75,6 +81,8 @@ struct AudioDecodeConfig {
 // ============================================================
 // 编码器接口
 // ============================================================
+// 视频编码器抽象接口：送原始帧 → 输出编码 MediaPacket
+    // 视频编码抽象接口：编码/刷新/关闭，输出 MediaPacket 列表
 class IVideoEncoder {
 public:
     virtual ~IVideoEncoder() = default;
@@ -93,6 +101,7 @@ public:
     virtual bool is_open() const = 0;
 };
 
+// 音频编码抽象接口：编码/刷新/关闭，输出 MediaPacket 列表
 class IAudioEncoder {
 public:
     virtual ~IAudioEncoder() = default;
@@ -112,14 +121,14 @@ public:
 // 解码器接口 v2.1
 // ============================================================
 
-// 解码状态
+// 解码状态：帧就绪 / 需更多输入 / 流结束
 enum class DecodeStatus {
     FrameReady,   // 成功取出一帧
     TryAgain,     // 暂无输出，需要更多输入（EAGAIN / timeout）
     EndOfStream,  // 流结束
 };
 
-// 解码器能力
+// 解码器能力：是否硬件解码、是否支持 Surface/CPU 输出
 struct DecoderCapability {
     bool hardware = false;
     bool supports_surface_output = false;

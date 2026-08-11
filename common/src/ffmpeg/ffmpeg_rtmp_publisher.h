@@ -6,6 +6,7 @@
 
 namespace streambridge {
 
+// 基于 FFmpeg 的 RTMP 推流发布器，实现 IMediaPublisher 接口
 class FFmpegRTMPPublisher : public IMediaPublisher {
 public:
     FFmpegRTMPPublisher();

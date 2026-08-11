@@ -5,6 +5,7 @@
 
 namespace streambridge {
 
+// 基于 FFmpeg 的 H.264 视频编码器，实现 IVideoEncoder 接口
 class FFmpegVideoEncoder : public IVideoEncoder {
 public:
     FFmpegVideoEncoder();

@@ -36,6 +36,7 @@ const char* session_state_name(SessionState state);
 // ============================================================
 // 会话观察者
 // ============================================================
+// 会话观察者：回调状态迁移、错误与运行指标
 class ISessionObserver {
 public:
     virtual ~ISessionObserver() = default;
@@ -63,6 +64,7 @@ public:
 // ============================================================
 // PublishSession 配置
 // ============================================================
+// 推流会话配置：采集/编码/发布参数与队列容量
 struct PublishSessionConfig {
     VideoCaptureConfig video_capture;
     AudioCaptureConfig audio_capture;
@@ -81,6 +83,7 @@ struct PublishSessionConfig {
 // ============================================================
 // PublishSession
 // ============================================================
+// 推流会话：编排采集-编码-发布全链路，维护状态机与线程
 class PublishSession {
 public:
     PublishSession(std::unique_ptr<IVideoCapture> video_capture,
@@ -116,6 +119,7 @@ private:
 // ============================================================
 // PlaybackSession 配置（M4 实现，此处仅声明）
 // ============================================================
+// 拉流播放会话配置（M4 实现，当前仅声明）
 struct PlaybackSessionConfig {
     SubscribeConfig subscribe;
     VideoDecodeConfig video_decode;

@@ -27,6 +27,7 @@ void log_write(LogLevel level, const char* tag, const char* fmt, ...)
 // Convenience macros — use these in all code
 // ============================================================
 
+// 便捷日志宏：统一日志输出入口，按 tag 区分模块，全部下发到 log_write
 #define SB_LOG_D(tag, fmt, ...) \
     streambridge::log_write(streambridge::LogLevel::Debug, tag, fmt, ##__VA_ARGS__)
 

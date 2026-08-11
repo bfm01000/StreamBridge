@@ -18,7 +18,8 @@ TimePointUs monotonic_now_us();
 // 2. Media clock: audio-driven master clock with wall-clock fallback
 // ============================================================
 
-class MediaClock {
+// 音频主时钟：用音频播放位置推算当前媒体时间，无音频时回退到 wall clock
+    class MediaClock {
 public:
     void reset();
 
@@ -61,7 +62,8 @@ enum class VideoSyncAction {
 
 const char* video_sync_action_name(VideoSyncAction action);
 
-struct VideoSyncDecision {
+// AV 同步决策结果：动作类型 + av_diff + 等待时间
+    struct VideoSyncDecision {
     VideoSyncAction action = VideoSyncAction::Render;
     int64_t av_diff_us = 0;   // video_pts - master_clock (positive = video ahead)
     int64_t wait_us = 0;      // microseconds to sleep (only valid for Wait action)
@@ -71,7 +73,8 @@ struct VideoSyncDecision {
 // 4. AV sync controller: decides what to do with each video frame
 // ============================================================
 
-class AVSyncController {
+// AV 同步决策器：比较视频 PTS 与音频主时钟，输出 Wait/Render/RenderLate/Drop
+    class AVSyncController {
 public:
     struct Config {
         // Video PTS ahead of master by more than this -> Wait

@@ -13,6 +13,7 @@ extern "C" {
 
 namespace streambridge::ffmpeg {
 
+// 基于 FFmpeg 的 AAC 音频解码器，实现公共 IAudioDecoder 接口
 class FFmpegAudioDecoder : public streambridge::IAudioDecoder {
 public:
     FFmpegAudioDecoder();

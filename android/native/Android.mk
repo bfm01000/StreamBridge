@@ -42,6 +42,9 @@ LOCAL_SRC_FILES := \
     playback/native_audio_output.cpp \
     playback/native_playback_session.cpp \
     playback/native_video_renderer.cpp \
+    playback/playback_metrics.cpp \
+    playback/playback_queue_config.cpp \
+    playback/playback_reconnect_controller.cpp \
     ../../common/src/av_sync.cpp \
     ../../common/src/ffmpeg_utils.cpp \
     ../../common/src/ffmpeg/codec_config.cpp \

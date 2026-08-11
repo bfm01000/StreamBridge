@@ -9,24 +9,14 @@
 #include <sstream>
 
 #include "ffmpeg/ffmpeg_video_decoder.h"
+#include "playback_constants.h"
+#include "playback_queue_config.h"
+#include "playback_reconnect_controller.h"
 
 namespace streambridge::android {
 namespace {
 
 constexpr char kLogTag[] = "StreamBridgeSession";
-
-constexpr size_t kMaxPacketQueueSize = 60;
-constexpr int64_t kPacketPopTimeoutMs = 200;
-constexpr int64_t kDemuxReadTimeoutMs = 5000;
-constexpr int kVideoDrainTimeoutMs = 0;
-
-streambridge::MediaQueue<streambridge::MediaPacket>::Config compressed_packet_queue_config() {
-    streambridge::MediaQueue<streambridge::MediaPacket>::Config config;
-    config.max_elements = kMaxPacketQueueSize;
-    config.drop_oldest_on_full = false;
-    config.push_timeout = streambridge::TimeDeltaUs::from_ms(kDemuxReadTimeoutMs);
-    return config;
-}
 
 void log_info(const char* msg) {
     SB_LOG_I(kLogTag, "%s", msg);
@@ -72,16 +62,12 @@ int NativePlaybackSession::start(std::string url, ANativeWindow* window) {
         abort_requested_ = false;
         surface_paused_ = false;
         stop_in_progress_ = false;
-        video_frames_rendered_ = 0;
-        video_frames_dropped_ = 0;
-        audio_frames_output_ = 0;
-        last_av_diff_us_ = 0;
-        last_sync_action_ = streambridge::VideoSyncAction::Render;
         first_video_pts_us_ = -1;
         first_audio_pts_us_ = -1;
         video_info_ = nullptr;
         audio_info_ = nullptr;
     }
+    metrics_.reset();
 
     video_packet_queue_.reset();
     audio_packet_queue_.reset();
@@ -195,11 +181,7 @@ std::string NativePlaybackSession::status_text() const {
     if (!last_error_.empty()) {
         oss << ": " << last_error_;
     }
-    oss << " vid=" << video_frames_rendered_
-        << " drop=" << video_frames_dropped_
-        << " aud=" << audio_frames_output_
-        << " sync=" << streambridge::video_sync_action_name(last_sync_action_)
-        << " av_diff=" << last_av_diff_us_ << "us";
+    oss << metrics_.status_suffix();
     return oss.str();
 }
 
@@ -249,16 +231,14 @@ void NativePlaybackSession::demux_loop() {
         url_copy = url_;
     }
 
-    constexpr int kMaxReconnect = 5;
-    constexpr int kReconnectDelayMs = 2000;
-    int reconnect_count = 0;
+    PlaybackReconnectController reconnect(5, 2000);
 
     // Outer loop: handles reconnection on network failure
-    while (!is_stopping() && reconnect_count <= kMaxReconnect) {
-        if (reconnect_count > 0) {
+    while (!is_stopping() && reconnect.can_try()) {
+        if (reconnect.is_reconnecting()) {
             SB_LOG_I(kLogTag,
                     "demux: reconnect attempt %d/%d after %dms",
-                    reconnect_count, kMaxReconnect, kReconnectDelayMs);
+                    reconnect.attempt(), reconnect.max_attempts(), reconnect.delay_ms());
 
             // Flush stale packets from queues (keep alive for decode threads)
             video_packet_queue_.flush();
@@ -280,7 +260,7 @@ void NativePlaybackSession::demux_loop() {
             }
 
             // Wait before retry
-            for (int i = 0; i < kReconnectDelayMs / 100 && !is_stopping(); ++i) {
+            for (int i = 0; i < reconnect.delay_ms() / 100 && !is_stopping(); ++i) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
             if (is_stopping()) break;
@@ -291,8 +271,8 @@ void NativePlaybackSession::demux_loop() {
         if (open_result.is_err()) {
             SB_LOG_W(kLogTag,
                     "demux: open failed (attempt %d): %s",
-                    reconnect_count, open_result.error_message().c_str());
-            ++reconnect_count;
+                    reconnect.attempt(), open_result.error_message().c_str());
+            reconnect.record_failure();
             continue;
         }
 
@@ -308,7 +288,7 @@ void NativePlaybackSession::demux_loop() {
         }
 
         clock_.start(streambridge::TimePointUs{0});
-        reconnect_count = 0;  // reset on successful connection
+        reconnect.reset_after_connected();
         SB_LOG_I(kLogTag,
                 "demux: connected, reading packets");
 
@@ -375,14 +355,14 @@ void NativePlaybackSession::demux_loop() {
 
         subscriber_.close();
         if (!connection_lost) break;  // normal stop, don't reconnect
-        ++reconnect_count;
+        reconnect.record_failure();
     }
 
     // Terminal: notify decode threads
     video_packet_queue_.abort();
     audio_packet_queue_.abort();
 
-    if (reconnect_count > kMaxReconnect) {
+    if (reconnect.exhausted()) {
         set_error("demux: max reconnect attempts exceeded");
     }
 
@@ -470,7 +450,7 @@ void NativePlaybackSession::video_loop() {
                 pkt_fed, frame_out, pkt_drop,
                 video_packet_queue_.size(), audio_packet_queue_.size(),
                 clock_.has_audio_clock() ? 1 : 0,
-                streambridge::video_sync_action_name(last_sync_action_));
+                streambridge::video_sync_action_name(metrics_.last_sync_action()));
         }
 
         streambridge::MediaPacket packet;
@@ -486,6 +466,7 @@ void NativePlaybackSession::video_loop() {
         }
 
         ++pkt_fed;
+        metrics_.on_video_packet_fed();
 
         // Send packet once
         Result<DecodeStatus> send_result = Result<DecodeStatus>::ok(DecodeStatus::TryAgain);
@@ -525,6 +506,7 @@ void NativePlaybackSession::video_loop() {
 
             auto& out = *recv;
             ++frame_out;
+            metrics_.on_video_frame_decoded();
             int64_t norm_pts = (first_video_pts_us_ >= 0 && out.pts_us > 0)
                 ? out.pts_us - first_video_pts_us_ : out.pts_us;
 
@@ -535,8 +517,7 @@ void NativePlaybackSession::video_loop() {
                 auto mc = clock_.now();
                 sync = sync_controller_.decide(
                     streambridge::TimePointUs{norm_pts}, mc);
-                last_av_diff_us_ = sync.av_diff_us;
-                last_sync_action_ = sync.action;
+                metrics_.set_sync(sync.action, sync.av_diff_us);
             }
 
             if (frame_out <= 10 || frame_out % 50 == 0)
@@ -546,6 +527,7 @@ void NativePlaybackSession::video_loop() {
 
             if (do_sync && sync.action == VideoSyncAction::Drop) {
                 ++pkt_drop;
+                metrics_.on_video_frame_dropped();
                 {
                     std::lock_guard<std::mutex> decoder_lock(decoder_mutex_);
                     video_decoder_->discard_frame(out.frame_id);
@@ -558,6 +540,7 @@ void NativePlaybackSession::video_loop() {
                 sync = sync_controller_.decide(TimePointUs{norm_pts}, mc2);
                 if (sync.action == VideoSyncAction::Drop) {
                     ++pkt_drop;
+                    metrics_.on_video_frame_dropped();
                     {
                         std::lock_guard<std::mutex> decoder_lock(decoder_mutex_);
                         video_decoder_->discard_frame(out.frame_id);
@@ -593,12 +576,13 @@ void NativePlaybackSession::video_loop() {
                 // DmaBufFrameHandle / GpuTextureHandle: future
             }, out.payload);
 
-            ++video_frames_rendered_;
+            metrics_.on_video_frame_presented();
 
-            if (video_frames_rendered_ > 0 && video_frames_rendered_ % 100 == 0) {
+            const int64_t presented = metrics_.video_frames_presented();
+            if (presented > 0 && presented % 100 == 0) {
                 SB_LOG_I(kLogTag,
                         "video: frame=%lld pts=%lld av=%lld q=%zu",
-                        static_cast<long long>(video_frames_rendered_),
+                        static_cast<long long>(presented),
                         static_cast<long long>(norm_pts),
                         static_cast<long long>(sync.av_diff_us),
                         video_packet_queue_.size());
@@ -613,8 +597,8 @@ void NativePlaybackSession::video_loop() {
                             "stability: pts=%lld rendered=%lld dropped=%lld "
                             "vq=%zu aq=%zu av=%lld state=%s",
                             static_cast<long long>(norm_pts),
-                            static_cast<long long>(video_frames_rendered_),
-                            static_cast<long long>(video_frames_dropped_),
+                            static_cast<long long>(metrics_.video_frames_presented()),
+                            static_cast<long long>(metrics_.video_frames_dropped()),
                             video_packet_queue_.size(),
                             audio_packet_queue_.size(),
                             static_cast<long long>(sync.av_diff_us),
@@ -727,8 +711,7 @@ void NativePlaybackSession::audio_loop() {
                                     "audio write failed: %s",
                                     write_result.error_message().c_str());
             } else {
-                std::lock_guard<std::mutex> lock(mutex_);
-                ++audio_frames_output_;
+                metrics_.on_audio_frame_output();
             }
 
             // Audio master clock: anchor at frame PTS, advance via played_frames

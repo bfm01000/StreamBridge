@@ -39,6 +39,7 @@ inline const char* queue_result_name(QueueResult r) {
 // ============================================================
 // 队列统计
 // ============================================================
+// 队列统计：累计推入/弹出/丢弃数、最大水位与等待耗时
 struct QueueStats {
     size_t total_pushed = 0;
     size_t total_popped = 0;
@@ -52,6 +53,7 @@ struct QueueStats {
 // MediaQueue<T>
 // ============================================================
 
+// 有界线程安全队列：跨线程传递媒体数据，支持容量/时长上限与 abort/flush
 template<typename T>
 class MediaQueue {
 public:

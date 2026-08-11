@@ -11,6 +11,9 @@ add_library(streambridge_android SHARED
     playback/playback_clock.cpp
     playback/native_playback_session.cpp
     playback/native_video_renderer.cpp
+    playback/playback_metrics.cpp
+    playback/playback_queue_config.cpp
+    playback/playback_reconnect_controller.cpp
 )
 
 target_compile_features(streambridge_android PRIVATE cxx_std_17)

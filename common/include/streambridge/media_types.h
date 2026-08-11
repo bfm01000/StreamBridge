@@ -15,6 +15,7 @@ namespace streambridge {
 
 struct TimeDeltaUs;
 
+// 时间点类型：单调时钟微秒时间戳，公共层统一时间基
 struct TimePointUs {
     int64_t us = 0;  // microseconds since monotonic epoch
 
@@ -39,6 +40,7 @@ struct TimePointUs {
     bool operator>=(TimePointUs other) const { return us >= other.us; }
 };
 
+// 时间间隔类型：微秒时长，提供帧/采样/毫秒换算
 struct TimeDeltaUs {
     int64_t us = 0;
 
@@ -91,6 +93,7 @@ inline TimeDeltaUs TimePointUs::operator-(TimePointUs other) const {
 // 2. 有理数 time base
 // ============================================================
 
+// 有理数 time base：num/den 表示 PTS 换算的时间基
 struct Rational {
     int32_t num = 1;
     int32_t den = 1;
@@ -145,6 +148,7 @@ enum class MemoryType : uint8_t {
 // 4. FrameBuffer — 底层内存所有权抽象
 // ============================================================
 
+// 帧内存所有权抽象：统一管理媒体帧底层内存的分配与释放
 class FrameBuffer {
 public:
     virtual ~FrameBuffer() = default;
@@ -155,7 +159,7 @@ public:
     virtual MemoryType memory_type() const { return MemoryType::CPU; }
 };
 
-// CPU 堆内存实现 — 一次性分配连续内存，所有 Plane 共享
+// CPU 堆内存实现：一次性分配连续内存，所有 Plane 共享
 class CpuFrameBuffer final : public FrameBuffer {
 public:
     explicit CpuFrameBuffer(size_t sz)
@@ -174,6 +178,7 @@ private:
 // 5. Plane — 纯视图，不持有内存
 // ============================================================
 
+// 平面视图：描述帧内某一平面的偏移/大小/步长，不持有内存
 struct Plane {
     uint8_t* data = nullptr;   // 此 plane 起始地址
     size_t size = 0;           // 此 plane 字节数
@@ -185,7 +190,7 @@ struct Plane {
 // 6. VideoFrame / AudioFrame — 数据帧
 // ============================================================
 
-// 编码后的数据包
+// 编码后的媒体包：类型/编码格式/PTS/DTS 与码流数据
 struct MediaPacket {
     MediaType type = MediaType::Unknown;
     CodecId codec = CodecId::Unknown;
@@ -206,7 +211,7 @@ struct MediaPacket {
     bool has_valid_pts() const { return pts.us >= 0; }
 };
 
-// 原始视频帧 — buffer 统一持有所有 Plane 的内存
+// 原始视频帧：Plane 视图 + buffer 统一持有内存，携带格式与 PTS
 struct VideoFrame {
     PixelFormat format = PixelFormat::Unknown;
     int width = 0;
@@ -231,7 +236,7 @@ struct VideoFrame {
     }
 };
 
-// 原始音频帧 — buffer 统一持有所有 Plane 的内存
+// 原始音频帧：Plane 视图 + buffer 统一持有内存，携带采样信息与 PTS
 struct AudioFrame {
     SampleFormat format = SampleFormat::Unknown;
     int sample_rate = 0;
@@ -266,7 +271,7 @@ struct AudioFrame {
     }
 };
 
-// 流元数据
+// 流元数据：媒体类型、编解码参数、时间基与扩展数据
 struct StreamInfo {
     MediaType type = MediaType::Unknown;
     CodecId codec = CodecId::Unknown;

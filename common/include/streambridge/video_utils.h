@@ -33,6 +33,7 @@ inline uint32_t pack_bgra(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) {
 // Letterbox / aspect-fit rectangle
 // ============================================================
 
+// 信箱模式矩形：源图像等比缩放居中后在目标区域的坐标与尺寸
 struct LetterBox {
     int x = 0, y = 0;
     int w = 0, h = 0;

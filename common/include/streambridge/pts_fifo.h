@@ -7,6 +7,7 @@
 
 namespace streambridge {
 
+// PTS 先进先出队列：单写单读，跟踪输入包 PTS 与输出帧的对应关系
 class PtsFifo {
 public:
     // Push PTS in microseconds (called before avcodec_send_packet)

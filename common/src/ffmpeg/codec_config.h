@@ -38,6 +38,7 @@ inline const char* bitstream_format_name(BitstreamFormat f) {
 // NAL unit (raw data, without start-code or length prefix)
 // ============================================================
 
+// 单个 NAL 单元（不含起始码或长度前缀的原始数据）
 struct NalUnit {
     std::vector<uint8_t> data;
 };
@@ -46,6 +47,7 @@ struct NalUnit {
 // CodecConfig — parsed parameter sets
 // ============================================================
 
+// 解析后的编解码器参数集（码流格式、NAL 长度字段及 SPS/PPS/VPS）
 struct CodecConfig {
     AVCodecID codec_id = AV_CODEC_ID_NONE;
     BitstreamFormat format = BitstreamFormat::Unknown;

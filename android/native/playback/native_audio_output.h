@@ -8,6 +8,7 @@
 
 namespace streambridge::android {
 
+// AAudio 音频输出封装：负责打开/关闭音频流、写入 PCM 帧，并按实际播放进度推算音频主时钟。
 class NativeAudioOutput {
 public:
     NativeAudioOutput();
