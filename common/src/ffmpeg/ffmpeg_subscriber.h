@@ -63,6 +63,7 @@ private:
 
     // True when container uses length-prefixed NALs (avcC/hvcC) → need Annex-B conversion
     bool need_annexb_conversion_ = false;
+    int nal_length_size_ = 4;
 
     // 内部方法：从 FFmpeg codec_id 映射到公共 CodecId
     static streambridge::CodecId map_codec_id(AVCodecID id);

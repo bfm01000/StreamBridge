@@ -56,6 +56,7 @@ private:
     std::string url_;
 
     // Sync primitives
+    mutable std::mutex decoder_mutex_;
     std::atomic<bool> abort_requested_{false};
     std::atomic<bool> surface_paused_{false};     // surface destroyed -> pause rendering
     std::atomic<bool> stop_in_progress_{false};   // guard against double-stop

@@ -6,7 +6,6 @@ import android.net.ConnectivityManager;
 import android.net.Network;
 import android.os.Bundle;
 import android.view.SurfaceHolder;
-import android.view.SurfaceView;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
@@ -17,7 +16,7 @@ import android.widget.Toast;
 public final class MainActivity extends Activity implements SurfaceHolder.Callback, PlaybackEvents {
     private NativeBridge nativeBridge;
     private SystemMediaPlayerBackend mediaPlayerBackend;
-    private SurfaceView surfaceView;
+    private AspectRatioSurfaceView surfaceView;
     private EditText urlInput;
     private TextView statusView;
     private Button startButton;
@@ -34,10 +33,11 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
 
-        surfaceView = new SurfaceView(this);
+        surfaceView = new AspectRatioSurfaceView(this);
+        surfaceView.setAspectRatio(16, 9);
         surfaceView.getHolder().addCallback(this);
         root.addView(surfaceView, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.0f));
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         urlInput = new EditText(this);
         urlInput.setSingleLine(true);

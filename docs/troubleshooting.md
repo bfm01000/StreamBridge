@@ -227,6 +227,103 @@ while (pop packet) {
 
 ---
 
+## 问题 8：画面顶部正常，下方被拉成长条——H.264 多 NAL 未完整转 Annex-B
+
+**现象**：
+- Linux 推流端确认正常。
+- Android 播放端能出画面，但只有画面顶部一小条正常，下面大面积变成顶部内容向下延伸的竖向长条。
+- 切到 FFmpeg 软件解码后仍然一样，排除单纯 MediaCodec Surface 输出问题。
+- UI 状态里可能显示 `sync=Wait` 或 `av_diff_us=...`，但这不是根因。
+
+**第一判断**：
+
+这种现象很像 stride/linesize 错误，例如：
+- 把 `ANativeWindow_Buffer.stride` 当字节而不是像素；
+- 把 FFmpeg `AVFrame.linesize[]` 错当 `width`；
+- RGBA 每行按 `width * 4` 写入，但目标 buffer 有 padding。
+
+因此先检查渲染日志：
+
+```text
+render cpu 1280x720 data=... stride=5120
+first render: src=1280x720(stride=5120) buf=1280x720(stride=1280)
+```
+
+这个日志说明：
+- 源 RGBA stride = `1280 * 4 = 5120` 字节，正常；
+- `ANativeWindow_Buffer.stride = 1280` 像素，写入时使用 `uint32_t*`，正常；
+- renderer 层没有明显行跨度错误。
+
+**真正根因**：
+
+RTMP/FLV 中的 H.264 使用 avcC 格式时，视频 packet 不是 Annex-B start code 分隔，而是长度前缀格式：
+
+```text
+[length][NAL][length][NAL][length][NAL]...
+```
+
+原代码只把 packet 的前 4 字节改成 start code：
+
+```cpp
+packet.data[0] = 0x00;
+packet.data[1] = 0x00;
+packet.data[2] = 0x00;
+packet.data[3] = 0x01;
+```
+
+这只转换了第一个 NAL，后续 NAL 仍然保留 length prefix。一个视频帧如果由多个 slice/NAL 组成，解码器只能正确解出前面一部分 slice，后续 slice 损坏，于是 H.264 错误隐藏会把最后有效区域向下扩展，最终画面看起来像“上面正常、下面被拉长”。
+
+**修复**：
+
+从 avcC/hvcC extradata 解析 `nal_length_size`，然后对每个 video packet 完整扫描所有 NAL：
+
+```text
+[len][NAL][len][NAL]...
+↓
+[00 00 00 01][NAL][00 00 00 01][NAL]...
+```
+
+修复文件：
+- `common/src/ffmpeg/ffmpeg_subscriber.h`
+- `common/src/ffmpeg/ffmpeg_subscriber.cpp`
+
+核心逻辑：
+
+```cpp
+while (offset + nal_length_size <= data.size()) {
+    nal_size = read_be_length(data + offset, nal_length_size);
+    offset += nal_length_size;
+
+    append 00 00 00 01;
+    append data[offset : offset + nal_size];
+    offset += nal_size;
+}
+```
+
+同时保留 renderer 稳定化修改：
+- `ANativeWindow_setBuffersGeometry(window, frame.width, frame.height, RGBA_8888)`
+- RGBA/BGRA/YUV420P 都按 plane stride 和 window stride 逐行写入，避免额外 letterbox 缩放路径干扰排查。
+
+**验证日志**：
+
+修复后应看到：
+
+```text
+subscriber: Annex-B conversion enabled (container=avcC nal_len_size=4)
+annexb pkt#... converted ... -> ... bytes
+```
+
+用户真机验证：画面恢复正常。
+
+**面试要点**：
+- H.264 有两种常见封装形式：Annex-B start code 与 avcC length-prefixed。
+- FLV/MP4 packet 内可能包含多个 NAL，不能只替换第一个 length prefix。
+- “画面局部正常、其余区域拖影/拉伸”不一定是渲染 stride，也可能是码流 slice 不完整触发解码错误隐藏。
+- 排查顺序：先用日志确认源 stride 与目标 stride，再检查 bitstream 格式转换。
+- MediaCodec 和 FFmpeg 软件解码都异常时，应优先怀疑解码前的 packet 数据。
+
+---
+
 ## 经验教训
 
 1. **交叉编译产物必须验证 ELF 元数据**：检查 SONAME、NEEDED、依赖库等动态段信息
@@ -235,3 +332,99 @@ while (pop packet) {
 4. **Windows + NDK 交叉编译的路径陷阱**：Windows 绝对路径可能被嵌入 ELF
 5. **FFmpeg 解码务必使用 send/receive 分离模式**：不要图方便把 send 和 receive 封装在同一个函数里在循环中调用，这会导致重复发包——视频（H.264）和音频（AAC）都中过这个坑
 6. **PTS 不要依赖 av_frame->pts**：解码器对 PTS 的处理是不透明的，自己维护 FIFO 队列是唯一可靠方案
+7. **avcC/hvcC 转 Annex-B 必须逐 NAL 完整转换**：一个 packet 可能包含多个 NAL，只替换前 4 字节会造成部分 slice 损坏，表现可能像渲染拉伸。
+
+---
+
+## 问题 9：MediaCodec zero-copy 能出帧，但画面停在前几帧不动
+
+**现象**：
+
+- 日志能看到硬解路径已经启用：
+
+```text
+using MediaCodec hardware decoder (zero-copy surface output)
+configure zero-copy: surface=...
+video decoder opened, mode=MediaCodec zero-copy
+```
+
+- 前几帧有输出：
+
+```text
+StreamBridgeMC frame#1 pts=10000 idx=15
+video: frame#1 pts=0 av=0 act=Render
+```
+
+- 随后队列接近满并持续丢帧：
+
+```text
+video: HEARTBEAT pkt_fed=11 frame_out=11 dropped=8 vq=59 aq=49 has_audio=1 sync=Drop
+```
+
+**根因**：
+
+这不是 MediaCodec 没有解码，也不是 Surface 没有 present。真正问题是视频线程在每个 packet 后调用阻塞式 drain：
+
+```cpp
+receive_frame(200);
+```
+
+当硬解暂时没有 ready 输出时，每个视频 packet 最多阻塞 200ms。30fps 视频本应约 33ms 一个 packet，结果喂包速度被拖到远低于实时速度，视频队列堆满，音频主时钟继续前进，AV sync 判断视频严重落后，于是持续 `Drop`。画面就停在最后一次真正 present 的帧上。
+
+**同时发现的放大因素**：
+
+启动后 Java/Surface 回调可能再次传入同一个 `ANativeWindow`。如果不判断是否同一个 Surface，会触发一次不必要的 MediaCodec recreate，进一步增加启动阶段延迟。
+
+**修复**：
+
+- 相同 Surface 不再调用 `MediaCodecVideoDecoder::set_surface()`，避免无意义 recreate。
+- 视频 drain 改成非阻塞：
+
+```cpp
+receive_frame(0);
+```
+
+这样每轮只取已经 ready 的输出帧，不因为暂时没帧而阻塞后续 packet 输入。
+
+**验证重点**：
+
+- `fed pkt#` 应持续快速增长，不应启动几秒后只到十几个。
+- `vq` 不应长期贴近容量上限，例如 `59/60`。
+- `sync=Drop` 可以短暂出现，但不应长时间连续。
+- 画面应持续更新。
+
+---
+
+## 问题 10：画面一会正常，一会马赛克，并且逐渐变糊
+
+**现象**：
+
+- 视频可以播放，但画面稳定性差。
+- 偶尔某一帧看起来正常，随后又逐渐出现花屏、马赛克、糊成块。
+- 等到下一个关键帧附近可能短暂恢复，然后再次变差。
+
+**根因**：
+
+压缩视频 packet 队列满时丢了旧 packet。`MediaQueue::push()` 原本在 `ByCount` 队列满时会自动 `drop_oldest`，这对已解码的 RGBA frame 还能接受，但对 H.264/AAC 压缩 packet 是危险的。
+
+H.264 的 P 帧依赖前面的参考帧。只要中间丢了一个压缩 packet，后续 P 帧参考链就断了，解码器只能错误隐藏，于是表现为马赛克、拖影、逐渐变糊。关键帧到来后参考链重建，画面才可能短暂恢复。
+
+**修复**：
+
+- `MediaQueue::Config` 增加 `drop_oldest_on_full`。
+- Android 播放端的音视频压缩 packet 队列设置为 `drop_oldest_on_full = false`。
+- 如果队列堵塞超过 `kDemuxReadTimeoutMs`，不再静默丢当前 packet，而是记录日志并走重连恢复。
+
+**规则**：
+
+- 解码前的 H.264/AAC packet 不允许为了追实时随便丢。
+- 需要追实时，只能：
+  - 解码后丢已经输出的 video frame；
+  - 或者显式 flush decoder，等待下一个 keyframe/I 帧重新同步；
+  - 或者让推流端降低码率、分辨率、fps、GOP 长度。
+
+**验证重点**：
+
+- 队列满时不应看到压缩 packet 被静默丢弃。
+- 花屏/马赛克应明显减少或消失。
+- 如果设备确实解不过来，应看到队列阻塞和重连日志，而不是持续播放损坏参考链。

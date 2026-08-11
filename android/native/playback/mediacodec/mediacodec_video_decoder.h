@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <unordered_map>
+#include <vector>
 
 #include "ffmpeg/codec_config.h"
 #include "mediacodec_raii.h"
@@ -48,6 +49,7 @@ private:
 
     AMediaCodec* codec_ = nullptr;
     ANativeWindow* surface_ = nullptr;
+    streambridge::StreamInfo stream_info_;
     AVCodecID codec_id_ = AV_CODEC_ID_NONE;
     int width_ = 0;
     int height_ = 0;
@@ -66,5 +68,6 @@ private:
 
 std::unique_ptr<streambridge::IVideoDecoder> create_video_decoder(ANativeWindow* surface);
 std::unique_ptr<streambridge::IAudioDecoder> create_audio_decoder();
+Result<void> set_decoder_surface(streambridge::IVideoDecoder* decoder, ANativeWindow* surface);
 
 }  // namespace streambridge::android::mediacodec

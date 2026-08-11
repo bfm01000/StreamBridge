@@ -8,6 +8,8 @@
 #include <cstring>
 #include <sstream>
 
+#include "ffmpeg/ffmpeg_video_decoder.h"
+
 namespace streambridge::android {
 namespace {
 
@@ -16,6 +18,15 @@ constexpr char kLogTag[] = "StreamBridgeSession";
 constexpr size_t kMaxPacketQueueSize = 60;
 constexpr int64_t kPacketPopTimeoutMs = 200;
 constexpr int64_t kDemuxReadTimeoutMs = 5000;
+constexpr int kVideoDrainTimeoutMs = 0;
+
+streambridge::MediaQueue<streambridge::MediaPacket>::Config compressed_packet_queue_config() {
+    streambridge::MediaQueue<streambridge::MediaPacket>::Config config;
+    config.max_elements = kMaxPacketQueueSize;
+    config.drop_oldest_on_full = false;
+    config.push_timeout = streambridge::TimeDeltaUs::from_ms(kDemuxReadTimeoutMs);
+    return config;
+}
 
 void log_info(const char* msg) {
     SB_LOG_I(kLogTag, "%s", msg);
@@ -28,8 +39,8 @@ void log_info(const char* msg) {
 // ============================================================
 
 NativePlaybackSession::NativePlaybackSession()
-    : video_packet_queue_({kMaxPacketQueueSize})
-    , audio_packet_queue_({kMaxPacketQueueSize}) {}
+    : video_packet_queue_(compressed_packet_queue_config())
+    , audio_packet_queue_(compressed_packet_queue_config()) {}
 
 NativePlaybackSession::~NativePlaybackSession() {
     stop();
@@ -128,13 +139,37 @@ void NativePlaybackSession::stop() {
 }
 
 void NativePlaybackSession::set_surface(ANativeWindow* window) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    renderer_.set_surface(window);
-    // Resume rendering if we were paused due to surface loss
-    if (window != nullptr && state_ == streambridge::SessionState::Paused) {
-        set_state_locked(streambridge::SessionState::Running);
+    bool surface_changed = false;
+    ANativeWindow* decoder_window = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        surface_changed = (renderer_.window() != window);
+        if (surface_changed) {
+            renderer_.set_surface(window);
+        }
+        // Resume rendering if we were paused due to surface loss
+        if (window != nullptr && state_ == streambridge::SessionState::Paused) {
+            set_state_locked(streambridge::SessionState::Running);
+        }
+        surface_paused_ = (window == nullptr);
+        decoder_window = renderer_.window();
     }
-    surface_paused_ = (window == nullptr);
+
+    if (!surface_changed) {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> decoder_lock(decoder_mutex_);
+        if (video_decoder_) {
+            auto result = streambridge::android::mediacodec::set_decoder_surface(
+                video_decoder_.get(), decoder_window);
+            if (result.is_err()) {
+                SB_LOG_W(kLogTag, "MediaCodec set_surface failed: %s",
+                         result.error_message().c_str());
+            }
+        }
+    }
 }
 
 void NativePlaybackSession::clear_surface() {
@@ -312,6 +347,12 @@ void NativePlaybackSession::demux_loop() {
                     connection_lost = false;  // intentional stop, not reconnect
                     break;
                 }
+                if (push_result == streambridge::QueueResult::Timeout) {
+                    SB_LOG_W(kLogTag, "demux: video packet queue blocked for %lldms, reconnect",
+                             static_cast<long long>(kDemuxReadTimeoutMs));
+                    connection_lost = true;
+                    break;
+                }
             } else if (packet.type == streambridge::MediaType::Audio) {
                 if (first_audio_pts_us_ < 0 && packet.has_valid_pts()) {
                     first_audio_pts_us_ = packet.pts.us;
@@ -321,6 +362,12 @@ void NativePlaybackSession::demux_loop() {
                     streambridge::TimeDeltaUs::from_ms(kDemuxReadTimeoutMs));
                 if (push_result == streambridge::QueueResult::Aborted) {
                     connection_lost = false;
+                    break;
+                }
+                if (push_result == streambridge::QueueResult::Timeout) {
+                    SB_LOG_W(kLogTag, "demux: audio packet queue blocked for %lldms, reconnect",
+                             static_cast<long long>(kDemuxReadTimeoutMs));
+                    connection_lost = true;
                     break;
                 }
             }
@@ -395,10 +442,17 @@ void NativePlaybackSession::video_loop() {
 
     auto open_result = video_decoder_->open(video_info_copy);
     if (open_result.is_err()) {
-        set_error(open_result.error_message());
-        return;
+        SB_LOG_W(kLogTag, "video: hardware decoder open failed, fallback to software: %s",
+                 open_result.error_message().c_str());
+        video_decoder_ = std::make_unique<streambridge::ffmpeg::FFmpegVideoDecoder>();
+        open_result = video_decoder_->open(video_info_copy);
+        if (open_result.is_err()) {
+            set_error(open_result.error_message());
+            return;
+        }
     }
-    log_info("video decoder opened, entering decode loop");
+    SB_LOG_I(kLogTag, "video decoder opened, mode=%s",
+             video_decoder_->capability().supports_surface_output ? "MediaCodec zero-copy" : "FFmpeg software");
 
     // Main decode loop: send each packet ONCE, receive all ready frames
     int pkt_fed = 0;
@@ -434,7 +488,11 @@ void NativePlaybackSession::video_loop() {
         ++pkt_fed;
 
         // Send packet once
-        auto send_result = video_decoder_->send_packet(packet);
+        Result<DecodeStatus> send_result = Result<DecodeStatus>::ok(DecodeStatus::TryAgain);
+        {
+            std::lock_guard<std::mutex> decoder_lock(decoder_mutex_);
+            send_result = video_decoder_->send_packet(packet);
+        }
         if (send_result.is_err()) {
             set_error(send_result.error_message());
             return;
@@ -449,7 +507,12 @@ void NativePlaybackSession::video_loop() {
         int deq_loops = 0;
         while (!is_stopping()) {
             ++deq_loops;
-            auto recv = video_decoder_->receive_frame(200);  // 200ms
+            Result<DecodeOutput> recv = Result<DecodeOutput>::err(
+                ErrorDomain::Internal, ErrorCode::QueueTimeout, "not ready");
+            {
+                std::lock_guard<std::mutex> decoder_lock(decoder_mutex_);
+                recv = video_decoder_->receive_frame(kVideoDrainTimeoutMs);
+            }
             if (recv.is_err()) {
                 if (recv.error_code() == ErrorCode::QueueTimeout) {
                     if (deq_loops == 1 && pkt_fed <= 10)
@@ -483,7 +546,10 @@ void NativePlaybackSession::video_loop() {
 
             if (do_sync && sync.action == VideoSyncAction::Drop) {
                 ++pkt_drop;
-                video_decoder_->discard_frame(out.frame_id);
+                {
+                    std::lock_guard<std::mutex> decoder_lock(decoder_mutex_);
+                    video_decoder_->discard_frame(out.frame_id);
+                }
                 continue;
             }
             if (do_sync && sync.action == VideoSyncAction::Wait) {
@@ -492,7 +558,10 @@ void NativePlaybackSession::video_loop() {
                 sync = sync_controller_.decide(TimePointUs{norm_pts}, mc2);
                 if (sync.action == VideoSyncAction::Drop) {
                     ++pkt_drop;
-                    video_decoder_->discard_frame(out.frame_id);
+                    {
+                        std::lock_guard<std::mutex> decoder_lock(decoder_mutex_);
+                        video_decoder_->discard_frame(out.frame_id);
+                    }
                     continue;
                 }
             }
@@ -505,10 +574,20 @@ void NativePlaybackSession::video_loop() {
             std::visit([&](auto&& handle) {
                 using T = std::decay_t<decltype(handle)>;
                 if constexpr (std::is_same_v<T, CpuFrameHandle>) {
-                    if (handle.frame.is_valid())
+                    if (handle.frame.is_valid()) {
+                        static int rc = 0;
+                        if (++rc <= 3) SB_LOG_I(kLogTag,
+                            "render cpu %dx%d data=%p buf=%p stride=%d",
+                            handle.frame.width, handle.frame.height,
+                            (void*)handle.frame.planes[0].data,
+                            (void*)(handle.buffer ? handle.buffer->data() : nullptr),
+                            handle.frame.planes[0].stride);
                         renderer_.render(handle.frame);
+                    }
+                    std::lock_guard<std::mutex> decoder_lock(decoder_mutex_);
                     video_decoder_->discard_frame(out.frame_id);
                 } else if constexpr (std::is_same_v<T, DecoderSurfaceHandle>) {
+                    std::lock_guard<std::mutex> decoder_lock(decoder_mutex_);
                     video_decoder_->present_frame(out.frame_id, 0);
                 }
                 // DmaBufFrameHandle / GpuTextureHandle: future
@@ -545,8 +624,13 @@ void NativePlaybackSession::video_loop() {
         }
     }
 
-    video_decoder_->drain();
-    video_decoder_->close();
+    {
+        std::lock_guard<std::mutex> decoder_lock(decoder_mutex_);
+        if (video_decoder_) {
+            video_decoder_->drain();
+            video_decoder_->close();
+        }
+    }
     log_info("video thread exiting");
 }
 

@@ -22,6 +22,7 @@ Result<void> MediaCodecVideoDecoder::open(const StreamInfo& info) {
     ANativeWindow* saved_surface = surface_;
     close();
     surface_ = saved_surface;
+    stream_info_ = info;
 
     width_ = info.width;
     height_ = info.height;
@@ -71,7 +72,13 @@ Result<void> MediaCodecVideoDecoder::try_finish_configuration() {
     if (!csd.csd_0.empty()) AMediaFormat_setBuffer(format.get(), "csd-0", csd.csd_0.data(), csd.csd_0.size());
     if (!csd.csd_1.empty()) AMediaFormat_setBuffer(format.get(), "csd-1", csd.csd_1.data(), csd.csd_1.size());
 
-    SB_LOG_I(kTag, "configure: surface=%p", static_cast<void*>(surface_));
+    if (surface_ == nullptr) {
+        close();
+        return Result<void>::err(ErrorDomain::Device, ErrorCode::DeviceNotFound,
+                                  "MediaCodec requires a valid output surface");
+    }
+
+    SB_LOG_I(kTag, "configure zero-copy: surface=%p", static_cast<void*>(surface_));
     if (AMediaCodec_configure(codec_, format.get(), surface_, nullptr, 0) != AMEDIA_OK) {
         close();
         return Result<void>::err(ErrorDomain::Codec, ErrorCode::CodecOpenFailed, "configure failed");
@@ -95,7 +102,6 @@ void MediaCodecVideoDecoder::close() {
         AMediaCodec_delete(codec_);
         codec_ = nullptr;
     }
-    surface_ = nullptr;
     saw_eos_ = false;
     config_complete_ = false;
     frame_map_.clear();
@@ -117,14 +123,10 @@ Result<void> MediaCodecVideoDecoder::set_surface(ANativeWindow* window) {
 }
 
 Result<void> MediaCodecVideoDecoder::recreate(ANativeWindow* new_surface) {
-    int sw = width_, sh = height_;
-    auto sci = codec_id_;
+    streambridge::StreamInfo saved_info = stream_info_;
     close();
     surface_ = new_surface;
-    StreamInfo info;
-    info.codec = (sci == AV_CODEC_ID_H264) ? CodecId::H264 : CodecId::H265;
-    info.width = sw; info.height = sh;
-    return open(info);
+    return open(saved_info);
 }
 
 // ============================================================
@@ -158,7 +160,12 @@ Result<DecodeStatus> MediaCodecVideoDecoder::send_packet(const MediaPacket& pack
     uint8_t* buf = AMediaCodec_getInputBuffer(codec_, idx, &buf_size);
     if (!buf) return Result<DecodeStatus>::err(ErrorDomain::Internal, ErrorCode::OutOfMemory, "null input buf");
 
-    size_t n = std::min(packet.data.size(), buf_size);
+    if (packet.data.size() > buf_size) {
+        return Result<DecodeStatus>::err(ErrorDomain::Codec, ErrorCode::CodecDecodeFailed,
+                                         "MediaCodec input buffer too small");
+    }
+
+    size_t n = packet.data.size();
     std::memcpy(buf, packet.data.data(), n);
     int64_t pts = packet.has_valid_pts() ? packet.pts.us : 0;
 
@@ -211,11 +218,15 @@ Result<DecodeOutput> MediaCodecVideoDecoder::receive_frame(int timeout_ms) {
 // present / discard
 // ============================================================
 
-Result<void> MediaCodecVideoDecoder::present_frame(uint64_t frame_id, int64_t /*target_time_ns*/) {
+Result<void> MediaCodecVideoDecoder::present_frame(uint64_t frame_id, int64_t target_time_ns) {
     auto it = frame_map_.find(frame_id);
     if (it == frame_map_.end())
         return Result<void>::err(ErrorDomain::Internal, ErrorCode::InvalidArgument, "unknown frame_id");
-    AMediaCodec_releaseOutputBuffer(codec_, it->second, true);
+    if (target_time_ns > 0) {
+        AMediaCodec_releaseOutputBufferAtTime(codec_, it->second, target_time_ns);
+    } else {
+        AMediaCodec_releaseOutputBuffer(codec_, it->second, true);
+    }
     frame_map_.erase(it);
     return Result<void>::ok();
 }
@@ -252,16 +263,26 @@ void MediaCodecVideoDecoder::flush() {
 // ============================================================
 
 std::unique_ptr<IVideoDecoder> create_video_decoder(ANativeWindow* surface) {
-    AMediaCodec* tc = AMediaCodec_createDecoderByType("video/avc");
-    if (tc) {
-        AMediaCodec_delete(tc);
-        SB_LOG_I(kTag, "using MediaCodec hardware decoder");
-        auto mc = std::make_unique<MediaCodecVideoDecoder>();
-        if (surface) mc->set_surface(surface);
-        return mc;
+    AMediaCodec* probe = AMediaCodec_createDecoderByType("video/avc");
+    if (probe != nullptr && surface != nullptr) {
+        AMediaCodec_delete(probe);
+        auto decoder = std::make_unique<MediaCodecVideoDecoder>();
+        decoder->set_surface(surface);
+        SB_LOG_I(kTag, "using MediaCodec hardware decoder (zero-copy surface output)");
+        return decoder;
     }
-    SB_LOG_I(kTag, "MediaCodec unavailable, fallback to FFmpeg");
+    if (probe != nullptr) {
+        AMediaCodec_delete(probe);
+    }
+    SB_LOG_I(kTag, "using FFmpeg software decoder fallback");
     return std::make_unique<streambridge::ffmpeg::FFmpegVideoDecoder>();
+}
+
+Result<void> set_decoder_surface(streambridge::IVideoDecoder* decoder, ANativeWindow* surface) {
+    if (decoder == nullptr || !decoder->capability().supports_surface_output) {
+        return Result<void>::ok();
+    }
+    return static_cast<MediaCodecVideoDecoder*>(decoder)->set_surface(surface);
 }
 
 std::unique_ptr<IAudioDecoder> create_audio_decoder() {

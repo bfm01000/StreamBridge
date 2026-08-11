@@ -515,6 +515,52 @@ shared/interface-contract
   3. 联调通过后进入 M5-M6：验证 AV 同步指标、长时间稳定性、重连和资源释放
 - 是否需要用户确认：否（Milestone 4 C++ 实现已完成，等待真机验证条件就绪）
 
+### 2026-08-11 Android AI H.264 Annex-B Conversion Bugfix
+
+- 问题现象：Android 播放画面顶部约一小条正常，下方画面变成顶部内容向下延伸的竖向长条；Linux 推流端确认正常；切到 FFmpeg 软件解码后仍然复现。
+- 排查过程：最初怀疑 renderer stride/linesize，检查日志发现 `render cpu 1280x720 stride=5120` 与 `ANativeWindow buf=1280x720 stride=1280` 都合理，排除主要渲染行跨度错误；随后检查 RTMP/FLV 订阅器的 avcC/hvcC 到 Annex-B 转换逻辑。
+- 根因：`FFmpegSubscriber::read_packet()` 只把 video packet 前 4 字节替换为 Annex-B start code，没有逐个转换 packet 内的多个 length-prefixed NAL。多 slice H.264 帧只解出前部 slice，后续 slice 损坏，解码器错误隐藏导致下方画面被拉成长条。
+- 修复内容：从 avcC/hvcC extradata 解析 `nal_length_size`，对每个 video packet 完整执行 `[len][NAL][len][NAL]... -> [00 00 00 01][NAL][00 00 00 01][NAL]...` 转换；保留 renderer 按 frame geometry 和 stride 逐行写入的稳定化修改。
+- 修改文件：`common/src/ffmpeg/ffmpeg_subscriber.h`、`common/src/ffmpeg/ffmpeg_subscriber.cpp`、`android/native/playback/native_video_renderer.cpp`、`docs/troubleshooting.md`、`docs/AI_COLLABORATION.md`。
+- 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功；APK 成功安装到设备 `84d32674`；用户真机验证画面恢复正常。
+- 经验记录：详见 `docs/troubleshooting.md` 的“问题 8：画面顶部正常，下方被拉成长条——H.264 多 NAL 未完整转 Annex-B”。
+
+### 2026-08-11 Android AI MediaCodec Zero-Copy Decode Path
+
+- 完成内容：Android 播放端默认优先创建 `MediaCodecVideoDecoder`，通过 `ANativeWindow` 作为输出 Surface 走硬件解码零拷贝路径；硬解创建或打开失败时自动回退到 FFmpeg 软件解码，不阻塞基本播放链路。
+- 修复内容：`MediaCodecVideoDecoder::recreate()` 保留原始 `StreamInfo` 和 codec extradata，避免 Surface 重建后丢失 SPS/PPS；`close()` 不再清空当前 Surface；配置前显式检查 Surface 非空；输入 packet 大于 MediaCodec input buffer 时返回错误，不再静默截断；`present_frame()` 支持 `AMediaCodec_releaseOutputBufferAtTime()` 的定时释放入口。
+- 生命周期处理：`NativePlaybackSession::set_surface()` 先让 renderer 持有/管理 `ANativeWindow`，再把 renderer 当前窗口传给 MediaCodec；decoder 调用由 `decoder_mutex_` 串行保护，避免 Surface 重建和 send/receive/present 并发访问同一 MediaCodec 实例。
+- 构建兼容：NDK 当前未开启 RTTI，因此没有使用 `dynamic_cast`；MediaCodec 模块提供 `set_decoder_surface()` helper，通过 `supports_surface_output` 能力标记进入硬解专属 Surface 更新。
+- 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功；APK 成功安装到设备 `84d32674`。
+- 预期日志：硬解路径应看到 `using MediaCodec hardware decoder (zero-copy surface output)`、`configure zero-copy: surface=...`、`video decoder opened, mode=MediaCodec zero-copy`；硬解不可用或配置失败时应看到 fallback 日志并进入 `FFmpeg software`。
+- 风险记录：当前 factory 只用 H.264 decoder 做硬解可用性探测，H.265 需后续按 `StreamInfo.codec` 精确探测；Surface 输出帧在 A/V sync 等待期间如果发生 Surface 重建，可能丢弃一个待展示 frame，但不应导致崩溃或长期卡死。
+
+### 2026-08-11 Android AI MediaCodec Freeze Bugfix
+
+- 问题现象：切到 MediaCodec zero-copy 后，画面显示前几帧后卡住不动；日志中硬解已成功配置并持续输出 frame，但 `sync=Drop`，`video_packet_queue` 接近满。
+- 根因：视频线程在每个 packet 之后用 `receive_frame(200ms)` drain 输出；当硬解暂时没有输出帧时，每个包都会额外等待约 200ms，导致视频喂包速度远低于实时 30fps，音频主时钟持续前进，AV sync 认为视频严重落后并连续丢弃视频帧，画面停留在最后一次 render/present 的帧。
+- 关联问题：Java/Surface 回调会在启动后再次传入同一个 `ANativeWindow`，旧逻辑会对同一个 Surface 触发 MediaCodec recreate，造成一次不必要的解码器重建和延迟。
+- 修复内容：`NativePlaybackSession::set_surface()` 对相同 Surface 直接跳过 MediaCodec 更新；视频 decode loop 的 drain 改为非阻塞 `receive_frame(0)`，只取已经 ready 的输出帧，不阻塞后续 packet 输入。
+- 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功；APK 成功安装到设备 `84d32674`。
+- 验证重点：修复后日志中不应再出现启动数秒内 `vq=59` 且 `sync=Drop` 长时间持续；`fed pkt#` 应按实时速度增长，画面应持续更新。
+
+### 2026-08-11 Android AI Video Aspect Ratio Fix
+
+- 问题现象：MediaCodec zero-copy 可以正常播放后，画面比例被拉伸，尤其竖屏下视频区域占满剩余高度导致 16:9 视频被显示成接近手机屏幕比例。
+- 根因：Java UI 直接使用 `SurfaceView` 并通过 `LinearLayout` 的 `height=0, weight=1` 占满剩余空间，SurfaceView 视图比例与视频流 1280x720 不一致；MediaCodec Surface 输出会按 SurfaceView 显示区域缩放，因此产生比例拉伸。
+- 修复内容：新增纯 Java `AspectRatioSurfaceView`，默认按 16:9 测量自身；`MainActivity` 使用该 view 并移除视频区域 weight 拉伸。
+- 修改文件：`android/app/src/main/java/com/streambridge/android/AspectRatioSurfaceView.java`、`android/app/src/main/java/com/streambridge/android/MainActivity.java`。
+- 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功；APK 成功安装到设备 `84d32674`；Gradle 显示 `compileDebugKotlin NO-SOURCE`。
+
+### 2026-08-11 Android AI Compressed Packet Drop Bugfix
+
+- 问题现象：播放过程中画面偶尔一帧正常，随后逐渐花屏、马赛克、变糊；到关键帧附近可能短暂恢复。
+- 根因：`MediaQueue::push()` 在 `ByCount` 队列满时默认丢弃旧元素；Android 播放端的视频队列保存的是 H.264 压缩 packet，丢掉任意 P 帧会破坏参考链，造成后续帧错误隐藏和马赛克。
+- 修复内容：`MediaQueue::Config` 增加 `drop_oldest_on_full`，默认保持旧行为；Android 音视频压缩 packet 队列设置为 `false`，满时等待空间；等待超过 `kDemuxReadTimeoutMs` 时记录日志并触发重连，不再静默丢包。
+- 修改文件：`common/include/streambridge/media_queue.h`、`android/native/playback/native_playback_session.cpp`、`docs/troubleshooting.md`、`docs/AI_COLLABORATION.md`。
+- 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功；APK 成功安装到设备 `84d32674`。
+- 后续原则：追实时只能丢解码后的 video frame，不能静默丢解码前 H.264/AAC packet；如果要跳过大量延迟，必须 flush decoder 并等待下一个 keyframe 重新同步。
+
 ## 10. Update Checklist
 
 每轮结束前检查：

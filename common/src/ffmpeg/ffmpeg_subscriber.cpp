@@ -10,12 +10,14 @@ extern "C" {
 }
 
 #include <cstring>
+#include <limits>
 
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <cerrno>
+#include <algorithm>
 
 namespace {
 
@@ -62,6 +64,55 @@ void log_info(const char* msg) {
 
 void log_error(const char* msg) {
     SB_LOG_E(kLogTag, "%s", msg);
+}
+
+uint32_t read_be_length(const uint8_t* data, int length_size) {
+    uint32_t value = 0;
+    for (int i = 0; i < length_size; ++i) {
+        value = (value << 8) | data[i];
+    }
+    return value;
+}
+
+bool convert_length_prefixed_nals_to_annexb(std::vector<uint8_t>& data,
+                                            int length_size) {
+    if (length_size != 1 && length_size != 2 && length_size != 4) {
+        return false;
+    }
+    if (data.size() < static_cast<size_t>(length_size)) {
+        return false;
+    }
+
+    std::vector<uint8_t> converted;
+    converted.reserve(data.size() + 16);
+
+    size_t offset = 0;
+    int nal_count = 0;
+    while (offset + static_cast<size_t>(length_size) <= data.size()) {
+        const uint32_t nal_size = read_be_length(data.data() + offset, length_size);
+        offset += static_cast<size_t>(length_size);
+        if (nal_size == 0 ||
+                nal_size > data.size() - offset ||
+                nal_size > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
+            return false;
+        }
+
+        converted.push_back(0x00);
+        converted.push_back(0x00);
+        converted.push_back(0x00);
+        converted.push_back(0x01);
+        converted.insert(converted.end(), data.begin() + static_cast<std::ptrdiff_t>(offset),
+                         data.begin() + static_cast<std::ptrdiff_t>(offset + nal_size));
+        offset += nal_size;
+        ++nal_count;
+    }
+
+    if (offset != data.size() || nal_count == 0) {
+        return false;
+    }
+
+    data.swap(converted);
+    return true;
 }
 
 // FFmpeg time_base → 微秒
@@ -184,8 +235,22 @@ streambridge::Result<void> FFmpegSubscriber::open(const std::string& url) {
             video_info_.codec_extradata.data(),
             video_info_.codec_extradata.size());
         if (detect == BitstreamFormat::Avcc || detect == BitstreamFormat::Hvcc) {
+            auto parsed_config = parse_codec_config(
+                (video_info_.codec == CodecId::H265) ? AV_CODEC_ID_H265 : AV_CODEC_ID_H264,
+                video_info_.codec_extradata.data(),
+                video_info_.codec_extradata.size());
+            if (parsed_config.is_err()) {
+                close();
+                return streambridge::Result<void>::err(
+                    parsed_config.error_domain(),
+                    parsed_config.error_code(),
+                    parsed_config.error_message());
+            }
             need_annexb_conversion_ = true;
-            log_info("subscriber: Annex-B conversion enabled (container is avcC/hvcC)");
+            nal_length_size_ = std::max(1, std::min(4, parsed_config->nal_length_size));
+            SB_LOG_I(kLogTag,
+                    "subscriber: Annex-B conversion enabled (container=%s nal_len_size=%d)",
+                    bitstream_format_name(detect), nal_length_size_);
         }
     }
 
@@ -277,15 +342,22 @@ streambridge::Result<streambridge::MediaPacket> FFmpegSubscriber::read_packet() 
 
     av_packet_free(&pkt);
 
-    // Convert length-prefixed NAL → Annex-B start-code (avcC/hvcC containers)
-    // FLV/MP4 packets: [4-byte big-endian length][NAL data] → [00 00 00 01][NAL data]
+    // Convert length-prefixed NALs → Annex-B start-code (avcC/hvcC containers).
+    // A single FLV/MP4 packet can contain multiple NAL units:
+    // [len][NAL][len][NAL]... → [00 00 00 01][NAL][00 00 00 01][NAL]...
     if (packet.type == streambridge::MediaType::Video && need_annexb_conversion_) {
-        if (packet.data.size() >= 4) {
-            // Replace length prefix with Annex-B start code
-            packet.data[0] = 0x00;
-            packet.data[1] = 0x00;
-            packet.data[2] = 0x00;
-            packet.data[3] = 0x01;
+        const size_t before_size = packet.data.size();
+        if (!convert_length_prefixed_nals_to_annexb(packet.data, nal_length_size_)) {
+            return streambridge::Result<streambridge::MediaPacket>::err(
+                streambridge::ErrorDomain::Codec,
+                streambridge::ErrorCode::MalformedAvcc,
+                "failed to convert length-prefixed video packet to Annex-B");
+        }
+        if (packet.sequence_number < 5) {
+            SB_LOG_I(kLogTag,
+                    "annexb pkt#%lld converted %zu -> %zu bytes",
+                    static_cast<long long>(packet.sequence_number),
+                    before_size, packet.data.size());
         }
     }
 
@@ -294,6 +366,7 @@ streambridge::Result<streambridge::MediaPacket> FFmpegSubscriber::read_packet() 
 
 void FFmpegSubscriber::close() {
     need_annexb_conversion_ = false;
+    nal_length_size_ = 4;
     if (fmt_ctx_ != nullptr) {
         avformat_close_input(&fmt_ctx_);
         fmt_ctx_ = nullptr;

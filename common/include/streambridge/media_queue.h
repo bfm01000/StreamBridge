@@ -65,6 +65,7 @@ public:
         size_t max_elements = 30;
         TimeDeltaUs max_duration{2'000'000};  // 2 秒
         CapacityMode mode = CapacityMode::ByCount;
+        bool drop_oldest_on_full = true;
         TimeDeltaUs push_timeout{100'000};    // 100ms
         TimeDeltaUs pop_timeout{5'000'000};   // 5s
     };
@@ -88,12 +89,9 @@ public:
                 do_push_unlocked(std::move(item));
                 return QueueResult::Ok;
             }
-            // 如果满且配置允许，丢弃旧元素
-            if (config_.mode == CapacityMode::ByCount) {
-                // 丢弃最旧的非关键元素
+            if (config_.mode == CapacityMode::ByCount && config_.drop_oldest_on_full) {
                 do_drop_oldest_unlocked();
                 do_push_unlocked(std::move(item));
-                stats_.total_dropped++;
                 return QueueResult::Ok;
             }
             // 等待空间
