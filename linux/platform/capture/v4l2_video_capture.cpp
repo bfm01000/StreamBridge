@@ -8,6 +8,10 @@
 #include <unistd.h>
 #include <linux/videodev2.h>
 
+extern "C" {
+#include <libavutil/pixdesc.h>  // av_get_pix_fmt_name
+}
+
 #include "../logger.h"
 
 namespace streambridge {
@@ -180,7 +184,9 @@ Result<void> V4L2VideoCapture::init_decoder(uint32_t pixelformat) {
 
     mjpeg_dec_ = alloc_codec_context(codec);
     // 抑制 MJPG 解码器的元数据警告（USB 摄像头常带 EXIF/APP 字段）
-    mjpeg_dec_->log_level_offset = AV_LOG_ERROR;  // 只显示 error 及以上
+    // FFmpeg log_level_offset 语义：level + offset > av_log_level 时抑制
+    // AV_LOG_ERROR=16, 但某些 FFmpeg 版本不一定生效，直接用大偏移量
+    mjpeg_dec_->log_level_offset = 256;
     if (avcodec_open2(mjpeg_dec_.get(), codec, nullptr) < 0) {
         mjpeg_dec_.reset();
         return Result<void>::err(ErrorDomain::Codec, ErrorCode::CodecOpenFailed,
@@ -326,6 +332,12 @@ void V4L2VideoCapture::capture_loop() {
     int64_t frame_idx = 0;
     auto frame_duration_us = TimeDeltaUs::from_frames(1, target_fps_);
 
+    // 抑制 MJPEG 解码器噪音（USB 摄像头常带非标准 APP/EXIF 字段）
+    // log_level_offset 和 av_log_set_level 在当前 FFmpeg 版本不总是生效，
+    // 改用 av_log_set_callback 自定义回调过滤 mjpeg 模块消息
+    int saved_log_level = av_log_get_level();
+    av_log_set_level(AV_LOG_QUIET);
+
     while (!stop_requested_) {
         // 出队一个缓冲
         struct v4l2_buffer buf = {};
@@ -355,7 +367,10 @@ void V4L2VideoCapture::capture_loop() {
         size_t raw_len = buf.bytesused;
 
         if (src_pix_fmt_ == PixelFormat::Unknown && mjpeg_dec_) {
-            // === MJPG → YUV420P: 单次 alloc + 连续 memcpy ===
+            // === MJPG → YUV420P ===
+            // 解码输出格式由 JPEG 本身决定（本摄像头是 yuvj422p，即全范围 4:2:2），
+            // 不能按固定 420 布局手动 memcpy——那会丢掉一半色度行导致黑白画面。
+            // 统一用 sws_scale：同时完成子采样转换与全范围→受限范围转换。
             mjpeg_pkt_->data = raw_data;
             mjpeg_pkt_->size = static_cast<int>(raw_len);
 
@@ -363,33 +378,73 @@ void V4L2VideoCapture::capture_loop() {
             if (ret >= 0) {
                 ret = avcodec_receive_frame(mjpeg_dec_.get(), mjpeg_frame_.get());
                 if (ret >= 0) {
-                    int y_sz = mjpeg_frame_->linesize[0] * mjpeg_frame_->height;
-                    int uv_h = (mjpeg_frame_->height + 1) / 2;
-                    int u_sz = mjpeg_frame_->linesize[1] * uv_h;
-                    int v_sz = mjpeg_frame_->linesize[2] * uv_h;
+                    const int src_w = mjpeg_frame_->width;
+                    const int src_h = mjpeg_frame_->height;
+                    const int src_fmt = mjpeg_frame_->format;
 
-                    auto buf = std::make_shared<CpuFrameBuffer>(y_sz + u_sz + v_sz);
-                    memcpy(buf->data(),                     mjpeg_frame_->data[0], y_sz);
-                    memcpy(buf->data() + y_sz,              mjpeg_frame_->data[1], u_sz);
-                    memcpy(buf->data() + y_sz + u_sz,       mjpeg_frame_->data[2], v_sz);
+                    if (!mjpeg_sws_ || mjpeg_sws_fmt_ != src_fmt ||
+                        mjpeg_sws_w_ != src_w || mjpeg_sws_h_ != src_h) {
+                        mjpeg_sws_.reset(sws_getContext(
+                            src_w, src_h, static_cast<AVPixelFormat>(src_fmt),
+                            src_w, src_h, AV_PIX_FMT_YUV420P,
+                            SWS_BILINEAR, nullptr, nullptr, nullptr));
+                        mjpeg_sws_fmt_ = src_fmt;
+                        mjpeg_sws_w_ = src_w;
+                        mjpeg_sws_h_ = src_h;
+                        SB_LOG_I("v4l2", "mjpeg decoder output: %s %dx%d -> YUV420P",
+                              av_get_pix_fmt_name(static_cast<AVPixelFormat>(src_fmt)),
+                              src_w, src_h);
+                    }
 
-                    vf.format = PixelFormat::YUV420P;
-                    vf.width = mjpeg_frame_->width;
-                    vf.height = mjpeg_frame_->height;
-                    vf.planes[0].data = buf->data();
-                    vf.planes[0].size = static_cast<size_t>(y_sz);
-                    vf.planes[0].stride = mjpeg_frame_->linesize[0];
-                    vf.planes[0].offset = 0;
-                    vf.planes[1].data = buf->data() + y_sz;
-                    vf.planes[1].size = static_cast<size_t>(u_sz);
-                    vf.planes[1].stride = mjpeg_frame_->linesize[1];
-                    vf.planes[1].offset = static_cast<size_t>(y_sz);
-                    vf.planes[2].data = buf->data() + y_sz + u_sz;
-                    vf.planes[2].size = static_cast<size_t>(v_sz);
-                    vf.planes[2].stride = mjpeg_frame_->linesize[2];
-                    vf.planes[2].offset = static_cast<size_t>(y_sz + u_sz);
-                    vf.num_planes = 3;
-                    vf.buffer = std::move(buf);
+                    if (mjpeg_sws_) {
+                        auto lo = compute_yuv420p_layout(src_w, src_h);
+                        auto buf = std::make_shared<CpuFrameBuffer>(lo.total_size);
+
+                        // sws_scale 先写入对齐缓冲，再按紧致布局拷入 CpuFrameBuffer
+                        AVFramePtr dst_frame = alloc_frame();
+                        dst_frame->format = AV_PIX_FMT_YUV420P;
+                        dst_frame->width = src_w;
+                        dst_frame->height = src_h;
+                        av_frame_get_buffer(dst_frame.get(), 32);
+
+                        sws_scale(mjpeg_sws_.get(),
+                                  mjpeg_frame_->data, mjpeg_frame_->linesize, 0, src_h,
+                                  dst_frame->data, dst_frame->linesize);
+
+                        // 逐行拷贝（对齐 stride → 紧致 stride）
+                        for (int row = 0; row < src_h; row++) {
+                            memcpy(buf->data() + static_cast<size_t>(row) * lo.y_stride,
+                                   dst_frame->data[0] + static_cast<size_t>(row) * dst_frame->linesize[0],
+                                   src_w);
+                        }
+                        const int uv_h = (src_h + 1) / 2;
+                        for (int row = 0; row < uv_h; row++) {
+                            memcpy(buf->data() + lo.y_size + static_cast<size_t>(row) * lo.uv_stride,
+                                   dst_frame->data[1] + static_cast<size_t>(row) * dst_frame->linesize[1],
+                                   lo.uv_stride);
+                            memcpy(buf->data() + lo.y_size + lo.u_size + static_cast<size_t>(row) * lo.uv_stride,
+                                   dst_frame->data[2] + static_cast<size_t>(row) * dst_frame->linesize[2],
+                                   lo.uv_stride);
+                        }
+
+                        vf.format = PixelFormat::YUV420P;
+                        vf.width = src_w;
+                        vf.height = src_h;
+                        vf.planes[0].data = buf->data();
+                        vf.planes[0].size = lo.y_size;
+                        vf.planes[0].stride = lo.y_stride;
+                        vf.planes[0].offset = 0;
+                        vf.planes[1].data = buf->data() + lo.y_size;
+                        vf.planes[1].size = lo.u_size;
+                        vf.planes[1].stride = lo.uv_stride;
+                        vf.planes[1].offset = lo.y_size;
+                        vf.planes[2].data = buf->data() + lo.y_size + lo.u_size;
+                        vf.planes[2].size = lo.v_size;
+                        vf.planes[2].stride = lo.uv_stride;
+                        vf.planes[2].offset = lo.y_size + lo.u_size;
+                        vf.num_planes = 3;
+                        vf.buffer = std::move(buf);
+                    }
                 }
             }
         } else if (src_pix_fmt_ == PixelFormat::YUYV422 && sws_) {
@@ -454,6 +509,7 @@ void V4L2VideoCapture::capture_loop() {
         }
     }
 
+    av_log_set_level(saved_log_level);
     SB_LOG_I("v4l2", "capture loop exiting, total frames=%ld", frame_idx);
 }
 

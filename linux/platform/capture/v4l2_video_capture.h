@@ -53,6 +53,10 @@ private:
     AVCodecContextPtr mjpeg_dec_;
     AVPacketPtr mjpeg_pkt_;
     AVFramePtr mjpeg_frame_;
+    SwsContextPtr mjpeg_sws_;          // MJPEG 解码输出 → YUV420P 转换
+    int mjpeg_sws_fmt_ = -1;           // 上次创建时的源格式/尺寸（变化时重建 sws）
+    int mjpeg_sws_w_ = 0;
+    int mjpeg_sws_h_ = 0;
     SwsContextPtr sws_;                // YUYV → YUV420P 转换
     PixelFormat src_pix_fmt_ = PixelFormat::Unknown;
 
