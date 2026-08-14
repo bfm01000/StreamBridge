@@ -290,3 +290,25 @@ verdict      : PASS
 
 注意：文件可验证「时间线对齐与无漂移」；感知唇音延迟还包含采集管线固有延迟
 （曝光、缓冲、编码），需在播放端用节拍器/嘴型做最终验证。
+
+---
+
+## 播放端验证（Linux 拉流播放）
+
+反向链路（Android 推流 → Linux 播放）的播放端用法、指标与排查详见
+`docs/build-and-run.md` §9。快速自检命令：
+
+```bash
+# 终端 1：模拟对端推流（SRS 需已运行）
+~/workspace/tools/ffmpeg-7.0.2-amd64-static/ffmpeg -re \
+  -i /home/bfm01000/下载/FRXXZ.mp4 \
+  -c:v libx264 -preset ultrafast -tune zerolatency -vf scale=640:480 \
+  -c:a aac -b:a 128k -f flv rtmp://127.0.0.1:1935/live/simulated
+
+# 终端 2：Linux 播放端（窗口播放，ESC 退出；或 --duration 20 自动退出）
+./linux/build/player/streambridge_player \
+  --url rtmp://127.0.0.1:1935/live/simulated --duration 20
+```
+
+验收要点：`rendered` 增速≈源帧率、`av_diff_us` 收敛 ±50ms、`dropped=0`、
+`reconnects=0`；有音频源时 `audio_frames` 匀速增长（音频主时钟生效）。
