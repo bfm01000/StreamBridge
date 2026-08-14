@@ -21,6 +21,10 @@ void log_write(LogLevel level, const char* tag, const char* fmt, ...)
 #endif
     ;
 
+// Global log level filter (implemented in logging.cpp)
+void set_log_level(LogLevel level);
+LogLevel get_log_level();
+
 }  // namespace streambridge
 
 // ============================================================

@@ -1,5 +1,4 @@
 add_library(sb_linux_platform STATIC
-    ffmpeg_utils.cpp
     capture/ffmpeg_video_capture.cpp
     capture/ffmpeg_audio_capture.cpp
     capture/alsa_audio_capture.cpp

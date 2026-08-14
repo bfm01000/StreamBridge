@@ -1,7 +1,7 @@
 #pragma once
 
 #include "streambridge/codec.h"
-#include "../ffmpeg_utils.h"
+#include "streambridge/ffmpeg_utils.h"
 
 namespace streambridge {
 

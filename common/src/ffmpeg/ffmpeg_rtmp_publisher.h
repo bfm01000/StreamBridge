@@ -2,7 +2,7 @@
 
 #include "streambridge/stop_token.h"
 #include "streambridge/transport.h"
-#include "../ffmpeg_utils.h"
+#include "streambridge/ffmpeg_utils.h"
 
 namespace streambridge {
 

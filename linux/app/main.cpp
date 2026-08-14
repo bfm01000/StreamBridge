@@ -3,16 +3,16 @@
 #include <csignal>
 #include <thread>
 
-#include "../platform/logger.h"
+#include "streambridge/logging.h"
 #include "../platform/capture/ffmpeg_video_capture.h"
 #include "../platform/capture/v4l2_video_capture.h"
 #include "../platform/capture/ffmpeg_audio_capture.h"
 #ifdef STREAMBRIDGE_HAS_ALSA
 #include "../platform/capture/alsa_audio_capture.h"
 #endif
-#include "../platform/encode/ffmpeg_video_encoder.h"
-#include "../platform/encode/ffmpeg_audio_encoder.h"
-#include "../platform/publish/ffmpeg_rtmp_publisher.h"
+#include "ffmpeg/ffmpeg_video_encoder.h"
+#include "ffmpeg/ffmpeg_audio_encoder.h"
+#include "ffmpeg/ffmpeg_rtmp_publisher.h"
 
 #include "app_config.h"
 #include "streambridge/session.h"

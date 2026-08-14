@@ -56,6 +56,16 @@ struct AVPacketDeleter {
 };
 using AVPacketPtr = std::unique_ptr<AVPacket, AVPacketDeleter>;
 
+struct AVFormatWriteDeleter {
+    void operator()(AVFormatContext* p) const {
+        if (p) {
+            if (p->pb) avio_closep(&p->pb);
+            avformat_free_context(p);
+        }
+    }
+};
+using AVFormatWritePtr = std::unique_ptr<AVFormatContext, AVFormatWriteDeleter>;
+
 // RAII：sws_freeContext 释放像素格式转换上下文
 struct SwsContextDeleter {
     void operator()(SwsContext* p) const {
@@ -86,6 +96,19 @@ inline AVFramePtr make_avframe() {
 
 inline AVPacketPtr make_avpacket() {
     return AVPacketPtr(av_packet_alloc());
+}
+
+// Legacy aliases — used by common/src/ffmpeg/ and linux/platform/
+inline AVCodecContextPtr alloc_codec_context(const AVCodec* codec) {
+    return make_avcodec(codec);
+}
+
+inline AVFramePtr alloc_frame() {
+    return make_avframe();
+}
+
+inline AVPacketPtr alloc_packet() {
+    return make_avpacket();
 }
 
 // ============================================================

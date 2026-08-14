@@ -195,6 +195,7 @@ nohup $SRS -c /tmp/srs.conf > /tmp/srs.log 2>&1 &
 ### 4.3 推流（视频-only）
 
 ```bash
+cd ~/workspace/StreamBridge/linux
 ./build/app/streambridge_publisher \
   --rtmp-url rtmp://127.0.0.1:1935/live/test \
   --video-source "testsrc=size=1280x720:rate=30" \
@@ -228,6 +229,7 @@ ffprobe -v quiet -show_streams rtmp://127.0.0.1:1935/live/test | \
 ### 5.1 推流（视频+音频）
 
 ```bash
+cd ~/workspace/StreamBridge/linux
 ./build/app/streambridge_publisher \
   --rtmp-url rtmp://127.0.0.1:1935/live/test \
   --video-source "testsrc=size=1280x720:rate=30" \
