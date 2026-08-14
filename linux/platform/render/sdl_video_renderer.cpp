@@ -82,6 +82,7 @@ Result<void> SDLVideoRenderer::ensure_texture(int frame_width, int frame_height)
 }
 
 Result<void> SDLVideoRenderer::render(const VideoFrame& frame) {
+    std::lock_guard<std::mutex> lock(render_mutex_);
     if (!renderer_ || !frame.is_valid()) {
         return Result<void>::err(ErrorDomain::Config, ErrorCode::InvalidConfig,
                                  "renderer not ready or invalid frame");
@@ -142,7 +143,8 @@ Result<void> SDLVideoRenderer::render(const VideoFrame& frame) {
     SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
     SDL_RenderClear(renderer_);
     SDL_RenderCopy(renderer_, texture_, nullptr, &dst_rect);
-    SDL_RenderPresent(renderer_);
+    // 不上屏：SDL 的 X11 Present 必须在主线程调用，否则窗口不更新（黑屏）
+    frame_pending_ = true;
 
     // 诊断：每 60 帧回读渲染缓冲与窗口 surface，验证画面确实呈现（黑屏排查用）
     if (++diag_frame_count_ % 60 == 0) {
@@ -175,6 +177,14 @@ Result<void> SDLVideoRenderer::render(const VideoFrame& frame) {
         }
     }
     return Result<void>::ok();
+}
+
+void SDLVideoRenderer::present() {
+    std::lock_guard<std::mutex> lock(render_mutex_);
+    if (renderer_ && frame_pending_) {
+        SDL_RenderPresent(renderer_);
+        frame_pending_ = false;
+    }
 }
 
 bool SDLVideoRenderer::poll_events(bool& quit_requested) {

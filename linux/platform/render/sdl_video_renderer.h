@@ -5,6 +5,7 @@
 // 便于窗口管理与软件渲染验证。
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -28,8 +29,13 @@ public:
     void close();
     bool is_open() const { return window_ != nullptr; }
 
-    // 渲染一帧（阻塞直到上屏；仅支持 CPU YUV420P/RGBA 帧）
+    // 渲染一帧（写入渲染后备缓冲，不上屏；仅支持 CPU YUV420P/RGBA 帧）。
+    // 可在线程中调用。注意：SDL 的 X11 Present 必须发生在主线程
+    //（非主线程 Present 不会更新窗口，表现为黑屏），所以 present() 分离。
     Result<void> render(const VideoFrame& frame);
+
+    // 呈现后备缓冲到窗口（必须在主线程调用）
+    void present();
 
     // 处理窗口事件；quit_requested 置位表示用户按 ESC 或关闭窗口
     // 返回 false 表示 SDL 内部出错（如窗口被销毁）
@@ -50,6 +56,8 @@ private:
     int win_h_ = 0;
     std::vector<uint32_t> rgba_buf_;  // YUV→RGB 转换缓冲
     int diag_frame_count_ = 0;        // 诊断：渲染帧计数（黑屏排查用）
+    std::mutex render_mutex_;         // 渲染线程与主线程 Present 的互斥
+    bool frame_pending_ = false;      // 有未呈现的新帧
 };
 
 }  // namespace streambridge

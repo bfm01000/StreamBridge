@@ -542,3 +542,42 @@ ffmpeg 解码地面真值完全一致。
   （RGBA8888）会静默走错路径而不是报错；
 - 「黑屏但指标正常」类问题用「纯色测试帧 + 窗口像素回读」比人眼判断快得多；
 - 窗口 surface 与渲染 backbuffer 都要回读，能区分「没画」与「没呈现」。
+
+---
+
+## 问题 14：SDL 窗口黑屏（指标正常、测试模式正常）——Present 跨线程调用
+
+**现象**：
+
+- `--test-pattern`（主线程渲染）显示正常；
+- 真实播放（视频线程渲染）窗口黑屏，但声音、帧率、同步指标全部正常；
+- SDL surface 内容正确（SDL_SaveBMP 快照有画面），但 X11 窗口像素全黑。
+
+**排查**：
+
+用 ctypes 直调 `XGetImage` 读取 X11 窗口真实像素（比人眼可靠）：
+窗口中心 RGB=(0,0,0)、黑像素占比 95%。最小复现（独立线程渲染红色帧 +
+`SDL_RenderPresent`）同样全黑，主线程渲染则正常。
+
+**根因**：
+
+**SDL 的 X11 驱动要求 `SDL_RenderPresent` 在主线程调用**。渲染线程
+（视频线程）调 Present 不会更新 X 窗口——SDL surface 更新了、backbuffer
+正确，但到屏幕的最后一跳丢失。SDL 文档明确要求所有 SDL 调用发生在
+主线程；软件渲染路径恰好在渲染阶段「看起来能用」，只有 Present 失效。
+
+**修复**：
+
+- `SDLVideoRenderer::render()`（视频线程）：只更新纹理 + RenderClear +
+  RenderCopy，置 `frame_pending_` 标志，**不 Present**；
+- 新增 `present()`（主线程）：由播放器主循环每 5ms 轮询调用，有未呈现
+  帧时 Present；互斥锁保护。
+
+**验证**：XGetImage 回读：画面区纯蓝（testsrc2）、letterbox 黑边、
+黑像素占比 95% → 7%。
+
+**经验**：
+
+- 「指标正常但用户看到黑屏」要区分三层：解码数据 → SDL surface →
+  X 窗口，逐层用程序化手段（像素 dump / SaveBMP / XGetImage）验证；
+- SDL 跨线程调用是常见坑：能渲染不代表能呈现，Present 必须回主线程。

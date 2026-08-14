@@ -304,6 +304,7 @@ int main(int argc, char* argv[]) {
             vf.buffer = buf;
             SB_LOG_I("main", "test pattern #%d (0x%08x)", c, colors[c]);
             p.renderer.render(vf);
+            p.renderer.present();  // 主线程 Present
             for (int s = 0; s < 20 && !p.stop_source.stop_requested(); s++)
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
@@ -374,6 +375,8 @@ int main(int argc, char* argv[]) {
         bool user_quit = false;
         p.renderer.poll_events(user_quit);
         if (user_quit) break;
+        // SDL 的 X11 Present 必须发生在主线程：由主循环以帧率节奏呈现
+        p.renderer.present();
 
         auto now = std::chrono::steady_clock::now();
         if (now >= deadline) {
@@ -392,7 +395,7 @@ int main(int argc, char* argv[]) {
                   p.video_pkt_q.size(), p.audio_pkt_q.size(),
                   p.reconnects.load());
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 
     // 6. 停止：先置停止标志并中断订阅器 IO，再等待线程退出后清理
