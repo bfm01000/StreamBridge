@@ -222,3 +222,93 @@ ffprobe -v error -show_entries stream=codec_name,width,height \
 - `state ... -> Error`：启动/运行中出错
 - `encode error`：编码失败
 - `stream is busy`：流名被占用
+
+---
+
+## 音画同步验证（camera + ALSA 真实设备）
+
+`av_sync_capture_test` 走完整生产链路（V4L2/ALSA 采集 → H.264/AAC 编码 → FLV mux），
+默认录制 10 秒到 `source/av_sync_test.flv`（相对运行目录），再离线分析音视频时间线。
+
+### 运行方式
+
+```bash
+cd linux/build
+make av_sync_capture_test
+
+./tests/av_sync_capture_test                  # 录制 10s 并分析（默认）
+./tests/av_sync_capture_test --duration 30    # 自定义时长
+./tests/av_sync_capture_test --output x.flv   # 自定义输出路径
+./tests/av_sync_capture_test --analyze x.flv  # 只分析已有文件
+ctest -R av_sync                              # ctest 入口（同默认 10s）
+```
+
+设备缺失（无摄像头/声卡）时打印 SKIP 并以退出码 0 结束。
+
+### 判定阈值（录制 10s）
+
+| 指标 | 阈值 | 含义 |
+|---|---|---|
+| start skew（音/视首包差） | ±100 ms | `AvStartAligner` 保证两路从同一零点开始 |
+| drift（视频跨度-音频跨度） | ±100 ms | 两路共用单调时钟，时间线应平行 |
+| 视频最大帧间隔 | ≤200 ms | 无长时间丢帧空洞 |
+| 音频最大包间隔 | ≤150 ms | 无 XRUN/队列丢包空洞 |
+| 单调性 | 必须 | 时间线不允许回退 |
+
+预期输出：
+
+```text
+=== AV sync analysis ===
+video frames : 291
+audio packets: 450
+duration     : 9642 ms
+start skew   : +20.0 ms
+drift        : +9.0 ms
+v max gap    : 45.0 ms
+a max gap    : 78.0 ms
+monotonic    : yes
+verdict      : PASS
+```
+
+### 时间戳架构（2026-08-14 修复后）
+
+- **采集端**：V4L2 优先用驱动 `buf.timestamp`（uvcvideo 帧完成时刻，CLOCK_MONOTONIC），
+  驱动未提供时回退到出队时刻；ALSA 用 `readi` 完成时刻。两路共用 CLOCK_MONOTONIC 时间域。
+  禁止 `frame_idx × 名义时长` 合成 PTS——丢帧/XRUN 后合成时钟与真实时间漂移。
+- **音频编码**：AAC 帧 PTS = 累积器首采样采集时刻 + 本轮帧偏移 × 帧长，
+  换算到输出采样时钟。累积器每轮重启时帧偏移归零（不能用全局帧计数，会重复叠加）。
+- **mux 对齐**：`AvStartAligner`（common）以较晚启动的一路首包为零点，
+  丢弃另一路早于零点的包；对齐前只等待不丢弃（过早丢弃会让两路首包永远
+  不同时在队，对齐饿死）。纯逻辑单元测试见 `ctest -R av_start_aligner`。
+
+### 排查指引
+
+- `start skew` 大：对齐器未生效（检查 `AV start aligned` 日志的 base 值）
+- `drift` 大：某一路 PTS 不是单调时钟（检查采集端时间戳来源）
+- `a max gap` 周期性 ~350ms：音频编码器累积轮次 PTS 叠加（`acc_frame_idx_` 未归零）
+- 录制文件 `source/av_sync_test.flv` 可用 `ffplay` 人工核对唇音
+
+注意：文件可验证「时间线对齐与无漂移」；感知唇音延迟还包含采集管线固有延迟
+（曝光、缓冲、编码），需在播放端用节拍器/嘴型做最终验证。
+
+---
+
+## 播放端验证（Linux 拉流播放）
+
+反向链路（Android 推流 → Linux 播放）的播放端用法、指标与排查详见
+`docs/build-and-run.md` §9。快速自检命令：
+
+```bash
+# 终端 1：模拟对端推流（SRS 需已运行）
+~/workspace/tools/ffmpeg-7.0.2-amd64-static/ffmpeg -re \
+  -i /home/bfm01000/下载/FRXXZ.mp4 \
+  -c:v libx264 -preset ultrafast -tune zerolatency -vf scale=640:480 \
+  -c:a aac -b:a 128k -f flv rtmp://127.0.0.1:1935/live/simulated
+
+# 终端 2：Linux 播放端（窗口播放，ESC 退出；或 --duration 20 自动退出）
+./linux/build/player/streambridge_player \
+  --url rtmp://127.0.0.1:1935/live/simulated --duration 20
+```
+
+验收要点：`rendered` 增速≈源帧率、`av_diff_us` 收敛 ±50ms、`dropped=0`、
+`reconnects=0`；有音频源时 `audio_frames` 匀速增长（音频主时钟生效）。

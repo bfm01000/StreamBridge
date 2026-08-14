@@ -16,3 +16,6 @@ local.properties
 # FFmpeg source (too large, build from script)
 third_party/ffmpeg-7.0.2/
 third_party/tools/
+
+# AV 同步测试录制产物
+source/

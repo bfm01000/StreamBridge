@@ -37,6 +37,7 @@ add_subdirectory(platform)
 
 # 可执行文件
 add_subdirectory(app)
+add_subdirectory(player)
 
 # 测试
 option(BUILD_TESTS "Build tests" ON)

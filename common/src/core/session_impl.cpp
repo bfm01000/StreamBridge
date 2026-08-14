@@ -3,7 +3,9 @@
 
 #include "streambridge/session.h"
 #include "streambridge/logging.h"
+#include "streambridge/av_start_aligner.h"
 #include <chrono>
+#include <ctime>
 #include <thread>
 
 namespace streambridge {
@@ -132,6 +134,12 @@ struct PublishSession::Impl {
     void mux_loop() {
         SB_LOG_I("mux", "mux/publish thread started");
 
+        // 设备源双路起始对齐：以较晚启动的一路为零点，丢弃另一路早于零点的包。
+        // 文件源两路同一时间线，对齐逻辑对其无副作用（base≈0）。
+        AvStartAligner aligner;
+        bool diag_v_done = false;
+        bool diag_a_done = false;
+
         while (!stop_source.stop_requested()) {
             // Peek video and audio queues, pick the one with smaller PTS
             MediaPacket vpkt;
@@ -139,10 +147,53 @@ struct PublishSession::Impl {
             bool got_video = (video_pkt_queue.try_peek(vpkt) == QueueResult::Ok);
             bool got_audio = this->has_audio && (audio_pkt_queue.try_peek(apkt) == QueueResult::Ok);
 
+            // 诊断：记录两路首包 PTS（debug 级别）
+            if (!diag_v_done && got_video) {
+                SB_LOG_D("mux", "first video pkt pts=%lld", static_cast<long long>(vpkt.pts.us));
+                diag_v_done = true;
+            }
+            if (!diag_a_done && got_audio) {
+                SB_LOG_D("mux", "first audio pkt pts=%lld", static_cast<long long>(apkt.pts.us));
+                diag_a_done = true;
+            }
+
+            if (this->has_audio) {
+                struct timespec ts{};
+                clock_gettime(CLOCK_MONOTONIC, &ts);
+                int64_t now_us = static_cast<int64_t>(ts.tv_sec) * 1'000'000LL
+                               + ts.tv_nsec / 1000;
+
+                auto d = aligner.on_peek(got_video, got_video ? vpkt.pts.us : 0,
+                                         got_audio, got_audio ? apkt.pts.us : 0,
+                                         now_us);
+                if (d.just_aligned) {
+                    SB_LOG_I("mux", "AV start aligned: base=%lld us "
+                            "(later-starting stream is zero point, earlier packets dropped)",
+                            static_cast<long long>(aligner.base_us()));
+                    continue;
+                }
+                if (d.action == AvStartAligner::Action::Wait) {
+                    // 对齐前：只等不丢，让两路首包都留在队列里
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    continue;
+                }
+                MediaPacket discard;
+                if (d.action == AvStartAligner::Action::DropVideo) {
+                    video_pkt_queue.try_pop(discard);
+                    SB_LOG_D("mux", "drop video pts=%lld (below base)", static_cast<long long>(discard.pts.us));
+                    continue;
+                }
+                if (d.action == AvStartAligner::Action::DropAudio) {
+                    audio_pkt_queue.try_pop(discard);
+                    SB_LOG_D("mux", "drop audio pts=%lld (below base)", static_cast<long long>(discard.pts.us));
+                    continue;
+                }
+            }
+
             MediaPacket pkt;
             if (got_video && got_audio) {
-                // Both available: interleave by PTS
-                if (vpkt.pts.us <= apkt.pts.us) {
+                // Both available: interleave by PTS（对齐后的零点时间轴）
+                if (aligner.adjust(vpkt.pts.us) <= aligner.adjust(apkt.pts.us)) {
                     video_pkt_queue.try_pop(pkt);
                 } else {
                     audio_pkt_queue.try_pop(pkt);
@@ -157,6 +208,10 @@ struct PublishSession::Impl {
                 if (res == QueueResult::Aborted) break;
                 if (res == QueueResult::Timeout) continue;
             }
+
+            // 平移到零点时间轴（未启用对齐时 base=0，恒等）
+            pkt.pts.us = aligner.adjust(pkt.pts.us);
+            if (pkt.dts.us >= 0) pkt.dts.us = aligner.adjust(pkt.dts.us);
 
             auto result = publisher->write_packet(pkt);
             if (result.is_err()) {

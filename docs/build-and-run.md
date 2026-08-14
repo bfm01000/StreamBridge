@@ -540,3 +540,105 @@ Android native 层当前已具备这些播放基础模块：
 - `NativeAudioOutput`：AAudio 输出 interleaved S16，并读取或估算实际播放帧位置。
 
 注意：`MediaPlayer` 对 RTMP 的支持取决于设备系统能力。如果设备系统不支持 RTMP，可先用 HTTP MP4/HLS URL 验证 Android 播放 UI、Surface 和音频输出；稳定 RTMP 播放仍需要后续接入 Android FFmpeg ABI。
+
+---
+
+## 9. Linux 播放端（反向链路：拉流 → 解码 → 同步 → 播放）
+
+Linux 端播放 Android 推流（或任意 RTMP 源）。架构依据 `docs/architecture.md`：
+反向链路复用公共订阅/解码/同步模块，平台差异在 video renderer（SDL2）与
+audio output（ALSA）中隔离。线程模型：demux 读包入队（压缩包队列满时等待、
+不丢包）→ 音频解码 + ALSA 播放（音频主时钟）→ 视频解码 + 同步决策
+（Wait/Render/Drop）+ SDL 渲染。
+
+### 9.1 构建
+
+```bash
+cd linux/build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j$(nproc) streambridge_player
+# 依赖：SDL2（sudo apt install libsdl2-dev）、ALSA、~/local FFmpeg（n7.1.1+）
+```
+
+### 9.2 运行
+
+```bash
+# 播放 Android 推的摄像头流（Android 端推流地址见 §8.4，host 用 LAN IP）
+./player/streambridge_player --url rtmp://127.0.0.1:1935/live/android_camera
+
+# 播放 Linux 自己推的摄像头流
+./player/streambridge_player --url rtmp://127.0.0.1:1935/live/full
+
+# 限时自动退出（无头验证 / 指标采集用）
+./player/streambridge_player --url rtmp://127.0.0.1:1935/live/simulated --duration 20
+```
+
+完整参数：
+
+| 参数 | 说明 | 默认值 |
+|---|---|---|
+| `--url <rtmp://...>` | RTMP 流地址 | 必填 |
+| `--audio-device <dev>` | ALSA 播放设备 | `default` |
+| `--no-audio` | 禁用音频播放（纯视频流不需要） | 关闭 |
+| `--window <WxH>` | 窗口尺寸（视频等比 letterbox 居中） | 1280x720 |
+| `--duration <s>` | 自动退出秒数 | 0（直到退出） |
+| `--log-level <level>` | debug/info/warn/error | info |
+
+按键：`ESC` 或 `q` 退出。无音频流（video-only）时主时钟自动回退到单调时钟。
+
+### 9.3 单边验证（不依赖 Android 推流端）
+
+```bash
+# 终端 1：本地文件模拟对端推流（SRS 需已运行，见 §3.1）
+~/workspace/tools/ffmpeg-7.0.2-amd64-static/ffmpeg -re \
+  -i /home/bfm01000/下载/FRXXZ.mp4 \
+  -c:v libx264 -preset ultrafast -tune zerolatency -vf scale=640:480 \
+  -c:a aac -b:a 128k -f flv rtmp://127.0.0.1:1935/live/simulated
+
+# 终端 2：Linux 播放端拉流播放
+./player/streambridge_player \
+  --url rtmp://127.0.0.1:1935/live/simulated --duration 20 --audio-device default
+```
+
+### 9.4 播放指标
+
+每 2 秒输出一行：
+
+```text
+uptime=6s rendered=126 dropped=0 av_diff_us=69167 audio_frames=249 vq=51 aq=84 reconnects=0
+```
+
+| 指标 | 含义 |
+|---|---|
+| `rendered` | 已渲染帧数（增速应 ≈ 源帧率） |
+| `dropped` | 同步决策丢弃帧数（视频落后主时钟太多） |
+| `av_diff_us` | 视频 PTS - 音频主时钟，正=视频超前；应稳定收敛在 ±50ms 内 |
+| `audio_frames` | 已解码并写入设备的音频帧数 |
+| `vq` / `aq` | 压缩包队列水位（ByDuration 2s 上限；持续满载说明消费不足） |
+| `reconnects` | 断流重连次数 |
+
+实测参考（640x480 25fps + AAC48k）：`rendered` 增速 ≈ 23fps，`av_diff_us`
+在 42~120ms 内收敛，`dropped=0`，`reconnects=0`。
+
+### 9.5 播放 Android 推流（当前状态）
+
+```bash
+./player/streambridge_player --url rtmp://127.0.0.1:1935/live/android_camera
+```
+
+当前 Android 推流为 video-only（无音频轨），播放端以首视频帧启动单调主时钟，
+渲染 30fps、av_diff 稳定 +60ms 左右。无音频时音画同步退化为「视频对齐单调时钟」
+（无唇音判定），音画同步验收需等 Android 端补音频轨。
+
+### 9.6 常见问题
+
+- **拉流失败 / 卡在打开阶段**：先确认该流名真的有推流源在推
+  （`ffprobe -v quiet -show_streams rtmp://127.0.0.1:1935/live/<name>` 能出
+  codec 信息说明有源）；确认 SRS 在跑（`ss -tlnp | grep 1935`）。
+  注意：拉一个**没有源的流名**会卡住/报错，这是正常现象，不是播放器 bug。
+- **无画面**：确认有图形环境（`echo $DISPLAY`）；播放器固定走 x11 +
+  software renderer（虚拟机内 Wayland/GL 加速不可用）。
+- **无声**：`aplay -l` 确认播放设备；`--audio-device default` 路由失败时
+  试 `--audio-device hw:0,0`（ES1371 虚拟机环境建议直接用 hw:0,0）。
+- **队列持续满载、渲染帧率低**：检查对端推流时间戳是否健康
+  （`av_diff_us` 持续增大说明对端 PTS 漂移，见 §9.5）。
