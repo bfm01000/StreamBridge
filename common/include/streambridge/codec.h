@@ -149,20 +149,33 @@ struct DecoderSurfaceHandle {};
 struct DmaBufFrameHandle { /* fd, planes, stride, modifier */ };
 // GPU 纹理句柄：纹理 ID 引用（预留）
 struct GpuTextureHandle { /* texture_id */ };
+// 平台硬件缓冲句柄：Android AHardwareBuffer 等，具体对象由 VideoFrame::buffer 持有
+struct HardwareBufferFrameHandle {
+    VideoFrame frame;
+};
 
 // 解码输出载荷：标记联合，只含一种有效的帧句柄
 using FramePayload = std::variant<
     CpuFrameHandle,
     DecoderSurfaceHandle,
     DmaBufFrameHandle,
-    GpuTextureHandle
+    GpuTextureHandle,
+    HardwareBufferFrameHandle
 >;
 
 // 统一解码输出：帧 ID、PTS 与具体帧载荷
+class DecodedFrameLease {
+public:
+    virtual ~DecodedFrameLease() = default;
+    virtual Result<void> present(int64_t target_time_ns) = 0;
+    virtual Result<void> discard() = 0;
+};
+
 struct DecodeOutput {
     uint64_t frame_id = 0;
     int64_t pts_us = 0;
     FramePayload payload;
+    std::shared_ptr<DecodedFrameLease> lease;
 };
 
 // 视频解码抽象接口：送包取帧、帧提交/丢弃与能力查询

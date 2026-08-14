@@ -20,11 +20,16 @@ final class NativeBridge {
         nativeHandle = nativeCreate();
     }
 
-    int start(String url, Surface surface) {
+    static final int PATH_AUTO = 0;
+    static final int PATH_MEDIACODEC_AHB_GPU = 1;
+    static final int PATH_MEDIACODEC_SURFACE = 2;
+    static final int PATH_FFMPEG_SOFTWARE = 3;
+
+    int start(String url, Surface surface, int decodePath) {
         if (nativeHandle == 0) {
             return -1;
         }
-        return nativeStart(nativeHandle, url, surface);
+        return nativeStart(nativeHandle, url, surface, decodePath);
     }
 
     void stop() {
@@ -61,7 +66,7 @@ final class NativeBridge {
 
     private static native long nativeCreate();
 
-    private static native int nativeStart(long handle, String url, Surface surface);
+    private static native int nativeStart(long handle, String url, Surface surface, int decodePath);
 
     private static native void nativeStop(long handle);
 

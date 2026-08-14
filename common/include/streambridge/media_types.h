@@ -142,6 +142,7 @@ enum class MemoryType : uint8_t {
     CPU       = 0,   // CpuFrameBuffer
     GLTexture = 1,   // OpenGL texture (future)
     DMA       = 2,   // DMA-BUF fd (future)
+    HardwareBuffer = 3,  // Android AHardwareBuffer / platform hardware buffer
 };
 
 // ============================================================
@@ -232,7 +233,13 @@ struct VideoFrame {
     }
 
     bool is_valid() const {
-        return buffer != nullptr && num_planes > 0 && width > 0 && height > 0;
+        if (buffer == nullptr || width <= 0 || height <= 0) {
+            return false;
+        }
+        if (memory_type() == MemoryType::HardwareBuffer) {
+            return true;
+        }
+        return num_planes > 0;
     }
 };
 

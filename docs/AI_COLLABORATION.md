@@ -21,6 +21,13 @@
 - BLOCKED：被依赖、环境或决策阻塞；
 - DONE：已完成并同步。
 
+### 2026-08-14 Status Override
+
+- 阶段 5：端到端联调 = DONE。
+- 用户确认：推流和直播功能均已验证完毕。
+- 已验证范围：Linux 推流源、SRS/RTMP 链路、Android 拉流播放、流源选择 UI、解码路径选择、视频渲染、音频播放、状态与性能指标刷新。
+- 旧状态表中如仍出现 `阶段 5 = TODO`、`P-009 = PROPOSED` 或真机安装 blocked 等历史状态，以本节和后续 Work Log 最新记录为准。
+
 ## 2. Role Ownership
 
 ### Android AI
@@ -571,6 +578,127 @@ shared/interface-contract
 - 验证结果：按用户要求本轮未构建、未安装；仅做静态文本检查，确认旧 metrics 成员引用已移除，新 cpp 已加入 Android 构建脚本。
 - 下一步建议：第二阶段再拆 `DemuxWorker`，把 `FFmpegSubscriber`、RTMP read loop、packet push、connection_lost 逻辑从 Session 中移出。
 
+### 2026-08-11 Android AI Playback Structure Optimization Phase 2
+
+- 完成内容：继续拆薄 `NativePlaybackSession`，新增 `DemuxWorker` 和 `AudioDecodeWorker`。
+- Demux 拆分：`DemuxWorker` 持有 `FFmpegSubscriber`，负责 RTMP open/read/close、packet 入队、读错误/EOF 检测、packet queue blocked 重连触发、重连前 flush packet queues、重置首帧 PTS 和 clock。`NativePlaybackSession` 只提供 stream info、state、error 回调。
+- Audio 拆分：`AudioDecodeWorker` 持有 AAC decoder 和 `NativeAudioOutput`，负责等待 audio stream info、打开 decoder、打开 AAudio、写音频帧、更新音频主时钟和 audio metrics。`NativePlaybackSession::audio_loop()` 变为薄封装。
+- 安全修正：音频 worker 不返回裸 `StreamInfo*`，而是通过 Session 锁内复制 `StreamInfo`，避免 demux 重连时指针失效。
+- 修改文件：`android/native/playback/demux_worker.h/.cpp`、`android/native/playback/audio_decode_worker.h/.cpp`、`android/native/playback/native_playback_session.h/.cpp`、`android/native/Android.mk`、`android/native/CMakeLists.txt`、`docs/AI_COLLABORATION.md`。
+- 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功；按用户要求未安装、未启动 App。
+- 下一步建议：第三阶段拆 `VideoDecodeWorker`，但该模块包含 MediaCodec Surface 生命周期、A/V sync、decoded frame drop 和 software render fallback，风险更高，应单独做并充分构建验证。
+
+### 2026-08-12 Android AI AHardwareBuffer Frame Path Foundation
+
+- 完成内容：新增 Android 端 `AHardwareBuffer` 帧承载/流转基础路径，不改变当前 MediaCodec Surface zero-copy 播放行为。
+- 公共接口：`MemoryType` 增加 `HardwareBuffer`；`FramePayload` 增加 `HardwareBufferFrameHandle`，用于表达由平台硬件缓冲承载的 `VideoFrame`。
+- Android 实现：新增 `HardwareBufferFrameBuffer`，封装 `AHardwareBuffer` 的 acquire/release、allocate、wrap、lock/unlock、stride/size 查询和 `to_video_frame()`；RGBA 类 buffer 在 CPU lock 后可暴露为 `VideoFrame` plane 视图用于调试或临时 CPU 路径。
+- 播放接入：`NativePlaybackSession` 的 payload visitor 能识别 `HardwareBufferFrameHandle`；如果该 buffer 已 CPU map，可走现有 renderer，否则记录 warning 并释放 frame。现有 `DecoderSurfaceHandle` 的 MediaCodec Surface 输出路径不变。
+- 构建更新：`hardware_buffer_frame.cpp` 加入 `Android.mk` 和 `CMakeLists.txt`；native 链接增加 `-lnativewindow` / `nativewindow`。
+- 边界说明：当前 MediaCodec Surface zero-copy 仍由 codec 直接输出到 Surface，不会直接把输出帧暴露成 `AHardwareBuffer`；后续若要真正用 AHB 做解码帧流转，需要接入 ImageReader/SurfaceTexture/GPU import 或独立 AHB 生产者路径。
+- 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功；按用户要求未安装、未启动 App。
+
+### 2026-08-12 Android AI Playback Structure Optimization Phase 3
+
+- 完成内容：新增 `VideoDecodeWorker`，将视频解码、MediaCodec/FFmpeg decoder 选择、A/V sync、decoded frame drop、Surface present、software render fallback 和 AHardwareBuffer payload 分支从 `NativePlaybackSession` 中移出。
+- Session 边界：`NativePlaybackSession::video_loop()` 现在只创建回调并启动 `VideoDecodeWorker`；Session 保留 Surface 生命周期入口，`set_surface()` 通过 `video_worker_->set_surface(renderer.window())` 转发给 MediaCodec worker。
+- 生命周期处理：`video_worker_`、`audio_worker_`、`demux_worker_` 的赋值和 reset 改为在 Session mutex 下进行，避免 UI 线程 Surface 回调与 worker 线程退出之间的数据竞争。
+- 行为保持：MediaCodec zero-copy 优先、FFmpeg software fallback、`receive_frame(0)` 非阻塞 drain、压缩 packet 不丢、decoded frame drop、AHardwareBuffer 已 CPU map 时可走 renderer 的行为保持不变。
+- 修改文件：`android/native/playback/video_decode_worker.h/.cpp`、`android/native/playback/native_playback_session.h/.cpp`、`android/native/Android.mk`、`android/native/CMakeLists.txt`、`docs/AI_COLLABORATION.md`。
+- 验证结果：首次构建发现 `deq_loops` 未使用导致 `-Werror` 失败，已删除；随后 `powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功；按用户要求未安装、未启动 App。
+
+### 2026-08-12 Android AI StreamInfo Snapshot Safety
+
+- 完成内容：`NativePlaybackSession` 不再保存来自 `FFmpegSubscriber` / `DemuxWorker` 的 `StreamInfo*` 裸指针，改为用 `std::optional<StreamInfo>` 保存视频和音频 stream info 快照。
+- 原因：demux 重连时 subscriber 会关闭并重建，旧的 stream info 指针可能随内部对象生命周期失效；音频/视频 worker 后续读取 stream info 时只应读取 Session 持有的稳定快照。
+- 行为边界：只改变 stream info 的保存方式，不改变 MediaCodec zero-copy、FFmpeg fallback、重连、packet 队列、A/V sync 或 Surface 生命周期策略。
+- 修改文件：`android/native/playback/native_playback_session.h`、`android/native/playback/native_playback_session.cpp`、`docs/AI_COLLABORATION.md`。
+- 验证结果：先静态检查确认没有残留 `video_info_ == nullptr` / `audio_info_ == nullptr` 等裸指针判断；随后运行 `powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功，APK 输出为 `android/app/build/outputs/apk/debug/app-debug.apk`，大小 6,930,897 bytes，时间 `2026-08-12 20:03:18`；未安装、未启动 App。
+
+### 2026-08-12 Android AI MediaCodec AHardwareBuffer Output Path
+
+- 完成内容：新增硬解输出链路 `MediaCodec -> AImageReader Surface -> AImage -> AHardwareBuffer -> VideoFrame -> NativeVideoRenderer -> 屏幕`，用于从 MediaCodec 输出侧拿到 `AHardwareBuffer` 后再进入现有渲染流程。
+- Decoder 接入：`MediaCodecVideoDecoder` 优先创建 `AImageReader`，用其 `ANativeWindow` 作为 MediaCodec 输出 Surface；`receive_frame()` 在释放 output buffer 后 acquire `AImage`，通过 `AImage_getHardwareBuffer()` 包装为 `HardwareBufferFrameHandle`。
+- 渲染接入：`VideoDecodeWorker` 复用已有 `HardwareBufferFrameHandle` 分支；`NativeVideoRenderer` 新增 NV12/NV21 渲染支持，兼容 `AIMAGE_FORMAT_YUV_420_888` 常见半平面布局。
+- 回退策略：如果 `AImageReader` 创建失败，会回退旧的 `MediaCodec -> Surface` 输出；如果硬解打开失败，仍回退 FFmpeg software decoder。
+- 当前边界：本阶段打通 AHardwareBuffer 帧流转和屏幕显示，但渲染端仍通过 CPU 可访问的 `AImage` plane 拷贝到 `ANativeWindow`；真正的 `AHardwareBuffer -> EGLImage/GPU texture -> 屏幕` 还未实现。
+- 修改文件：`android/native/playback/mediacodec/mediacodec_video_decoder.h/.cpp`、`android/native/playback/native_video_renderer.h/.cpp`、`android/native/CMakeLists.txt`、`docs/AI_COLLABORATION.md`。
+- 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功，APK 输出为 `android/app/build/outputs/apk/debug/app-debug.apk`，大小 6,950,153 bytes，时间 `2026-08-12 20:23:01`；未安装、未启动 App。
+
+### 2026-08-12 Android AI AHardwareBuffer GPU Render Path
+
+- 完成内容：补齐 `AHardwareBuffer -> EGLImage -> GL_TEXTURE_EXTERNAL_OES -> EGLSurface -> 屏幕` 渲染段，使新增硬件缓冲链路不再只能依赖 CPU plane 拷贝。
+- Renderer 接入：`NativeVideoRenderer::render()` 遇到 `MemoryType::HardwareBuffer` 时优先走 GPU 渲染；通过 `eglGetNativeClientBufferANDROID()`、`eglCreateImageKHR()` 和 `glEGLImageTargetTexture2DOES()` 将 `AHardwareBuffer` 绑定为 external OES texture，再用 GLES2 shader 绘制到当前 `ANativeWindow`。
+- 生命周期处理：renderer 持有 EGL display/context/surface、GL program 和 texture；`set_surface()` / `clear_surface()` 时销毁 EGL 资源，Surface 重建后按需重新初始化。
+- 回退策略：如果设备不支持相关 EGL/GLES 扩展、EGL 初始化失败、shader 编译失败或绑定失败，会记录 warning 并回退到上一阶段的 CPU YUV/RGBA 渲染路径。
+- 构建修正：NDK r28 暴露扩展函数需要 `EGL_EGLEXT_PROTOTYPES` / `GL_GLEXT_PROTOTYPES`；工程禁用 RTTI，因此 renderer 使用 `static_pointer_cast`，不使用 `dynamic_pointer_cast`。
+- 修改文件：`android/native/playback/native_video_renderer.h/.cpp`、`android/native/Android.mk`、`android/native/CMakeLists.txt`、`docs/AI_COLLABORATION.md`。
+- 验证结果：首次构建发现 EGL/GLES 扩展 prototype 和 RTTI 问题，已修正；随后 `powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功，APK 输出为 `android/app/build/outputs/apk/debug/app-debug.apk`，大小 6,960,617 bytes，时间 `2026-08-12 20:40:54`；未安装、未启动 App。
+
+### 2026-08-13 Android AI AHardwareBuffer Opaque Plane Bugfix
+
+- 问题现象：真机运行 AHardwareBuffer 路径时，`AImageReader` 能成功创建并拿到 `AHardwareBuffer`，但首帧报错 `AImage plane data unavailable`，Session 进入 Error 并停止播放。
+- 根因：高通解码器输出格式为厂商私有 YUV layout（日志显示 `color-format=2141391878` / `0x7fa30c06`），`AImage_getHardwareBuffer()` 可用，但 `AImage_getPlaneData()` 不一定提供 CPU 可读 plane。旧实现把 CPU plane 不可读当作解码错误，导致 GPU 路径还没机会消费 AHardwareBuffer。
+- 修复内容：`image_to_video_frame()` 改为允许无 CPU plane 的 `HardwareBuffer` 帧，plane 不可读时返回 `num_planes=0` 的硬件帧并记录 warning；`VideoFrame::is_valid()` 对 `MemoryType::HardwareBuffer` 只要求 buffer/width/height 有效；`VideoDecodeWorker` 不再因硬件帧没有 CPU plane 而丢弃，统一交给 renderer 的 EGLImage 路径处理。
+- 行为边界：CPU YUV/RGBA fallback 仍保留；如果 GPU 渲染失败会记录 `render hardware buffer failed`，但不会因为 CPU plane 不可读提前退出。
+- 修改文件：`common/include/streambridge/media_types.h`、`android/native/playback/mediacodec/mediacodec_video_decoder.cpp`、`android/native/playback/video_decode_worker.cpp`、`docs/AI_COLLABORATION.md`。
+- 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功，APK 输出为 `android/app/build/outputs/apk/debug/app-debug.apk`，大小 6,484,680 bytes，时间 `2026-08-13 14:50:07`；未安装、未启动 App。
+
+### 2026-08-13 Android AI Decode Path Control
+
+- 完成内容：新增上层解码/渲染路径控制，Java UI 可选择 `AUTO`、`MEDIACODEC_AHB_GPU`、`MEDIACODEC_SURFACE`、`FFMPEG_SOFTWARE`。
+- Java/JNI 接入：`NativeBridge.start()` 新增 `decodePath` 参数；`MainActivity` 新增纯 Java `Spinner`，默认 `AUTO`；JNI 将 int path 转换为 native `VideoDecodePath`。
+- Native 接入：新增 `video_path_config.h/.cpp`；`NativePlaybackSession` 保存启动时选择的路径；`VideoDecodeWorker` 将路径传给 MediaCodec factory；`MediaCodecVideoDecoder` 根据路径决定强制 AHB、强制 Surface、强制 FFmpeg 或自动回退。
+- 状态展示：`PlaybackMetrics` 增加 `video=` 和 `render=` 字段，状态栏可看到请求/实际路径，例如 `path=AUTO video=AUTO render=AHB_GPU` 或 `path=FFMPEG_SOFTWARE video=FFMPEG_SOFTWARE render=CPU`。
+- 文档更新：`docs/architecture.md` 新增 Android decode/render path 图，说明三条路径、回退顺序和真机验证顺序。
+- 修改文件：`android/app/src/main/java/com/streambridge/android/NativeBridge.java`、`android/app/src/main/java/com/streambridge/android/MainActivity.java`、`android/native/jni/streambridge_jni.cpp`、`android/native/playback/video_path_config.h/.cpp`、`android/native/playback/native_playback_session.h/.cpp`、`android/native/playback/video_decode_worker.h/.cpp`、`android/native/playback/mediacodec/mediacodec_video_decoder.h/.cpp`、`android/native/playback/playback_metrics.h/.cpp`、`android/native/Android.mk`、`android/native/CMakeLists.txt`、`docs/architecture.md`、`docs/AI_COLLABORATION.md`。
+- 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功，APK 输出为 `android/app/build/outputs/apk/debug/app-debug.apk`，大小 6,484,680 bytes，时间 `2026-08-13 15:18:36`；未安装、未启动 App。
+
+### 2026-08-13 Android AI AImageReader And EGL Diagnostics
+
+- 完成内容：优化 AHardwareBuffer 路径的 AImageReader 队列策略，并增强 EGL/GLES 错误诊断。
+- AImageReader 创建：优先使用 `AImageReader_newWithUsage()`，显式请求 `AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE | AHARDWAREBUFFER_USAGE_CPU_READ_RARELY`；如果设备不支持该 usage，再回退 `AImageReader_new()`。
+- 队列策略：新增 `acquire_latest_image()`，通过循环 `AImageReader_acquireNextImage()` drain 旧帧，只保留最新帧；每次丢弃旧 `AImage` 都立即 `AImage_delete()`，减少 ImageReader 队列积压对 MediaCodec 的反压。
+- 诊断日志：记录 reader `maxImages`、usage、acquire count、drained count、dropped count；`media_status_t` 会转换成可读名称。
+- EGL/GLES 错误：`eglGetDisplay`、`eglInitialize`、`eglChooseConfig`、`eglCreateContext`、`eglCreateWindowSurface`、`eglMakeCurrent`、`eglSwapBuffers`、`glEGLImageTargetTexture2DOES`、`glDrawArrays`、external texture setup 都会携带 `egl=0x...` 或 `gl=0x...` 错误码。
+- 修改文件：`android/native/playback/mediacodec/mediacodec_video_decoder.h/.cpp`、`android/native/playback/native_video_renderer.cpp`、`docs/AI_COLLABORATION.md`。
+- 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功，APK 输出为 `android/app/build/outputs/apk/debug/app-debug.apk`，大小 7,220,017 bytes，时间 `2026-08-13 15:24:40`；未安装、未启动 App。
+
+### 2026-08-13 Android AI Pure AHardwareBuffer GPU Usage
+
+- 问题背景：为验证真正的 AHardwareBuffer 零拷贝 GPU 路径，主 AHB reader usage 不应包含 `AHARDWAREBUFFER_USAGE_CPU_READ_RARELY`，否则 gralloc 可能选择 CPU 友好的 linear layout，影响硬解/GPU 私有布局。
+- 调整内容：AHB GPU 路径的 `AImageReader_newWithUsage()` 改为只请求 `AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE`；日志显示 `usage=0x100`，MediaCodec 输出仍为厂商私有格式 `0x7fa30c06`，并且 `rendered AHardwareBuffer via EGLImage` 成功。
+- 修复内容：纯 GPU usage 下不再尝试 `AImage_getPlaneData()`，避免 NDK 每帧输出 `does not have any software read usage bits set` / `failed to lock buffer for CPU access`；新增 `image_reader_cpu_readable_` 标记，仅 CPU-readable reader 才探测 plane。
+- 日志预期：创建 reader 时应看到 `cpu_readable=0`；AHB GPU 正常时应看到 `EGL renderer initialized` 和 `rendered AHardwareBuffer via EGLImage`，不应再持续刷 `AImage_getPlaneData` 失败。
+- 修改文件：`android/native/playback/mediacodec/mediacodec_video_decoder.h/.cpp`、`docs/AI_COLLABORATION.md`。
+- 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功，APK 输出为 `android/app/build/outputs/apk/debug/app-debug.apk`，大小 6,501,064 bytes，时间 `2026-08-13 16:21:05`；未安装、未启动 App。
+
+### 2026-08-13 Android AI AImageReader Drop Policy Correction
+
+- 问题背景：`acquire_latest_image()` 在 decoder adapter 内部通过 drain ImageReader 队列只保留最新帧，属于隐式丢 decoded frame，会绕过 `VideoDecodeWorker::handle_output()` 中的 A/V sync 决策和丢帧统计。
+- 修复内容：将默认取帧策略改为 `acquire_next_image()`，每次只调用一次 `AImageReader_acquireNextImage()` 取下一帧，不再循环 drain，不再在 MediaCodec/AImageReader adapter 层偷偷丢帧。
+- 分层原则：decoder adapter 只负责从 MediaCodec/AImageReader 输出一帧；是否 Drop/Wait/Render 继续由 A/V sync 统一决定。低延迟 latest/drain 策略如后续需要，应作为显式模式开关，并单独计入 metrics。
+- 日志变化：`AImageReader acquire latest count=... drained=... dropped=...` 不再出现；新日志为 `AImageReader acquire next count=...`。
+- 修改文件：`android/native/playback/mediacodec/mediacodec_video_decoder.h/.cpp`、`docs/AI_COLLABORATION.md`。
+- 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功，APK 输出为 `android/app/build/outputs/apk/debug/app-debug.apk`，大小 6,501,064 bytes，时间 `2026-08-13 18:07:44`；未安装、未启动 App。
+
+### 2026-08-13 Android AI DecodeOutput RAII Frame Lease
+
+- 完成内容：将硬件解码输出帧生命周期从 `MediaCodecVideoDecoder` 内部 `frame_map_` 改为随 `DecodeOutput` 单向流转的 RAII lease；`VideoDecodeWorker` 不再通过 `frame_id` 回调 decoder 查表释放帧。
+- 设计调整：`DecodeOutput` 新增 `std::shared_ptr<DecodedFrameLease>`；Surface 路径通过 lease 调用 `AMediaCodec_releaseOutputBuffer()` / `AMediaCodec_releaseOutputBufferAtTime()`，析构时默认 discard 未处理 buffer；AHardwareBuffer 路径通过 lease 持有 `AImage*`，析构时自动 `AImage_delete()`。
+- 分层收益：decoder 只负责产出帧和平台资源 lease，A/V sync 仍然负责 Drop/Wait/Render 决策，渲染后释放由当前帧对象完成，避免“数据向下流、释放再向上 get”的过度封装。
+- 兼容边界：`IVideoDecoder::present_frame()` / `discard_frame()` 暂时保留为 legacy 接口；MediaCodec 实现会返回“生命周期由 DecodeOutput::lease 管理”，FFmpeg CPU 帧不需要 lease，依赖 `shared_ptr` 自动释放。
+- 修改文件：`common/include/streambridge/codec.h`、`android/native/playback/mediacodec/mediacodec_video_decoder.h/.cpp`、`android/native/playback/video_decode_worker.h/.cpp`、`docs/AI_COLLABORATION.md`。
+- 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功；`compileDebugKotlin NO-SOURCE`；APK 输出 `android/app/build/outputs/apk/debug/app-debug.apk`，大小 `7,238,129` bytes，时间 `2026-08-13 18:57:27`；未安装、未运行 App。
+
+### 2026-08-14 Android AI VideoDecodeWorker Readability Refactor
+
+- 完成内容：重构 `VideoDecodeWorker::handle_output()`，将原来混在一个函数里的 PTS 归一化、A/V sync、Surface 等待、渲染分支、资源释放和日志拆成独立小函数。
+- 设计调整：主流程现在按 `normalize -> decide sync -> apply sync/drop -> wait surface -> render -> metrics/log` 顺序表达；CPU、Surface、AHardwareBuffer 三条渲染路径分别由 `render_cpu_frame()`、`render_surface_frame()`、`render_hardware_buffer_frame()` 处理。
+- 行为边界：保持原有 Drop/Wait/Render 策略、RAII lease 释放方式和 metrics 语义不变；只是降低 `handle_output()` 的阅读负担。
+- 修改文件：`android/native/playback/video_decode_worker.h`、`android/native/playback/video_decode_worker.cpp`、`docs/AI_COLLABORATION.md`。
+- 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功；`compileDebugKotlin NO-SOURCE`；APK 输出 `android/app/build/outputs/apk/debug/app-debug.apk`，大小 `6,501,064` bytes，时间 `2026-08-14 14:01:39`；未安装、未运行 App。
+
 ### 2026-08-14 Linux AI V4L2 Camera Color Fix & Stream-Source Proposal
 
 - 完成内容：
@@ -580,6 +708,40 @@ shared/interface-contract
 - 修改文件：`linux/platform/capture/v4l2_video_capture.{h,cpp}`、`common/include/streambridge/{ffmpeg_utils,logging}.h`、`common/src/logging.cpp`、`linux/app/main.cpp`、`linux/platform/{CMakeLists.txt,ffmpeg_utils.h,logger.h(新增)}`、`docs/build-and-run.md`、`docs/AI_COLLABORATION.md`。
 - 验证结果：`make -j$(nproc)` 通过；推流 28s cap=836 drop=0；拉流 90 帧 U/V std 5.5/7.2（修复前 2.8/1.9）。
 - 给 Android AI 的请求：**见 P-009** —— 播放端 UI 新增流源选择列表，让用户选择接收 camera / 本地视频 / 自检彩条等不同直播推流，待确认后实施。
+
+### 2026-08-14 Android AI Stream Source UI Selection
+
+- 完成内容：根据 Linux AI 的 P-009 提议，Android 播放端 UI 新增流源选择列表，用于接收 Linux 端不同推流源。
+- Linux 侧约定：当前可用直播路径包括 `/live/camera`（V4L2 摄像头）、`/live/file`（本地文件后端）、`/live/selftest`（lavfi 自检彩条），同时保留 `/live/test` 与 `/live/full` 便于旧链路和完整音视频链路验证。
+- Android UI 行为：新增 `streamSourceSpinner`，选项为 `Custom URL`、`Camera /live/camera`、`File /live/file`、`Selftest /live/selftest`、`Test /live/test`、`Full AV /live/full`；选择预设时只替换 RTMP URL 的 path，保留当前输入框中的 `rtmp://host:port`，适配 Linux 端 IP/端口变化。
+- 设计边界：不新增 Session 类型，不改变 native 播放链路；`Custom URL` 保持用户手动输入，其他预设在点击播放前会再次应用，确保路径与选择一致。
+- 修改文件：`android/app/src/main/java/com/streambridge/android/MainActivity.java`、`docs/AI_COLLABORATION.md`。
+- 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功；`compileDebugKotlin NO-SOURCE`；APK 输出 `android/app/build/outputs/apk/debug/app-debug.apk`，大小 `7,241,665` bytes，时间 `2026-08-14 15:21:36`；未安装、未运行 App。
+
+### 2026-08-14 Android AI Playback Performance Metrics UI
+
+- 完成内容：Android 播放页新增性能指标显示行，并扩展 native playback status，展示直播运行指标。
+- 新增指标：`bitrate`（Android demux 已接收字节计算的平均接收码率）、`vfps`（已展示视频帧率）、`afps`（音频输出帧率）、`buf_delay`（Android 已收到最新媒体 PTS 与播放主时钟之间的本地缓冲滞后估算）、`av_diff`、`drop`、`render`。
+- 重要边界：`buf_delay` 不是端到端采集延时；真正端到端延时需要 Linux 推流端在流内携带采集 wall-clock/NTP 时间戳，Android 再与本机时钟对齐计算。
+- 实现方式：`DemuxWorker` 每收到 packet 调用 `PlaybackMetrics::on_packet_demuxed()` 累计字节和最新 PTS；`NativePlaybackSession::status_text()` 把当前 master clock 传给 metrics；`MainActivity` 新增 `metricsView`，从 native status 中提取关键字段单独展示。
+- 修改文件：`android/native/playback/playback_metrics.h/.cpp`、`android/native/playback/demux_worker.h/.cpp`、`android/native/playback/native_playback_session.cpp`、`android/app/src/main/java/com/streambridge/android/MainActivity.java`、`docs/AI_COLLABORATION.md`。
+- 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功；`compileDebugKotlin NO-SOURCE`；APK 输出 `android/app/build/outputs/apk/debug/app-debug.apk`，大小 `6,501,064` bytes，时间 `2026-08-14 15:33:37`；未安装、未运行 App。
+
+### 2026-08-14 Android AI Metrics Polling Timeout Bugfix
+
+- 问题现象：播放一段时间后页面上的 status/metrics 不再刷新，但播放线程本身仍可能继续运行。
+- 根因：`MainActivity::pollNativeStatus()` 使用固定 `for (int i = 0; i < 600; i++)`，每 100ms 轮询一次，最多只刷新 60 秒；超过 60 秒后 Java 轮询线程自然退出。
+- 修复内容：新增 `statusPolling` 与 `statusPollingThread`，轮询改为播放期间持续运行；开始播放前先停止旧轮询，停止播放、Error、Stopped 时显式关闭轮询，避免重复线程和 UI 假死。
+- 修改文件：`android/app/src/main/java/com/streambridge/android/MainActivity.java`、`docs/AI_COLLABORATION.md`。
+- 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功；`compileDebugKotlin NO-SOURCE`；APK 输出 `android/app/build/outputs/apk/debug/app-debug.apk`，大小 `6,501,064` bytes，时间 `2026-08-14 15:39:09`；未安装、未运行 App。
+
+### 2026-08-14 Android/Linux E2E Streaming Verification Completed
+
+- 完成内容：用户确认推流和直播功能均已验证完毕，阶段 5 端到端联调视为 DONE。
+- 验证范围：Linux 推流端多路源（camera/file/selftest 等）到 SRS/RTMP，再到 Android 播放端的拉流、解封装、解码、渲染、音频播放、UI 流源选择、解码路径选择和性能指标显示。
+- Android 侧当前能力：支持 `Custom URL`、`/live/camera`、`/live/file`、`/live/selftest`、`/live/test`、`/live/full` 的流源选择；支持 `AUTO`、`MEDIACODEC_AHB_GPU`、`MEDIACODEC_SURFACE`、`FFMPEG_SOFTWARE` 解码路径选择；页面显示 `bitrate/vfps/afps/buf_delay/av_diff/drop/render`。
+- 状态更新：阶段 5 从待联调推进为已验证；P-009 流源选择提议已落地；真机安装/运行相关历史阻塞不再作为当前主线阻塞。
+- 剩余建议：后续可进入收尾优化，包括真正端到端延迟时间戳方案、长时间稳定性报告、重连/切流专项记录和文档清账。
 
 ## 10. Update Checklist
 

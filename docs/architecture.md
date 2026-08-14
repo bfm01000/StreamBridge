@@ -546,7 +546,63 @@ Linux publisher -> SRS -> ffplay / ffprobe
 6. SRS 采用本机安装、Docker 还是远程服务。
 7. 是否允许在 `scripts/` 中保留最小 FFmpeg/Python 模拟脚本作为端侧验证工具。
 
-## 14. Recommended First Milestone
+## 14. Android Decode And Render Paths
+
+Android 播放端当前保留三条视频解码/渲染路径，方便真机排查和性能对比。
+
+```text
+AUTO
+  -> MediaCodec AHB GPU
+  -> MediaCodec Surface
+  -> FFmpeg Software
+```
+
+```text
+MEDIACODEC_AHB_GPU
+RTMP packet
+  -> MediaCodec
+  -> AImageReader Surface
+  -> AImage
+  -> AHardwareBuffer
+  -> EGLImage
+  -> GL_TEXTURE_EXTERNAL_OES
+  -> EGLSurface / ANativeWindow
+  -> screen
+```
+
+```text
+MEDIACODEC_SURFACE
+RTMP packet
+  -> MediaCodec
+  -> decoder output Surface
+  -> screen
+```
+
+```text
+FFMPEG_SOFTWARE
+RTMP packet
+  -> FFmpeg video decoder
+  -> CPU VideoFrame
+  -> ANativeWindow lock/copy
+  -> screen
+```
+
+Java UI 通过下拉框选择路径，JNI 将整型路径传给 `NativePlaybackSession`，再传给 `VideoDecodeWorker` 和 decoder factory。状态栏会显示请求路径和实际渲染路径，例如：
+
+```text
+path=AUTO video=AUTO render=AHB_GPU
+path=MEDIACODEC_SURFACE video=MEDIACODEC_SURFACE render=SURFACE
+path=FFMPEG_SOFTWARE video=FFMPEG_SOFTWARE render=CPU
+```
+
+真机验证优先顺序：
+
+- 先用 `MEDIACODEC_SURFACE` 确认老硬解路径仍正常；
+- 再用 `MEDIACODEC_AHB_GPU` 验证 AHardwareBuffer / EGLImage 路径；
+- 如果 AHB 路径异常，用 `FFMPEG_SOFTWARE` 区分码流问题和硬件路径问题；
+- 默认 `AUTO` 用于日常播放，允许自动回退。
+
+## 15. Recommended First Milestone
 
 架构确认后，建议第一个实现里程碑是：
 

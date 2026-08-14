@@ -4,6 +4,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -11,12 +12,12 @@
 #include "streambridge/media_queue.h"
 #include "streambridge/session.h"
 
-#include "ffmpeg/ffmpeg_subscriber.h"
-// (subscriber now in common/src/ffmpeg/, namespace streambridge::ffmpeg)
-#include "mediacodec/mediacodec_video_decoder.h"
-#include "native_audio_output.h"
+#include "audio_decode_worker.h"
+#include "demux_worker.h"
 #include "native_video_renderer.h"
 #include "playback_metrics.h"
+#include "video_path_config.h"
+#include "video_decode_worker.h"
 
 namespace streambridge::android {
 
@@ -29,7 +30,8 @@ public:
     NativePlaybackSession(const NativePlaybackSession&) = delete;
     NativePlaybackSession& operator=(const NativePlaybackSession&) = delete;
 
-    int start(std::string url, ANativeWindow* window);
+    int start(std::string url, ANativeWindow* window,
+              VideoDecodePath decode_path = VideoDecodePath::Auto);
     void stop();
 
     void set_surface(ANativeWindow* window);
@@ -56,19 +58,18 @@ private:
     streambridge::SessionState state_ = streambridge::SessionState::Idle;
     std::string last_error_;
     std::string url_;
+    VideoDecodePath decode_path_ = VideoDecodePath::Auto;
 
     // Sync primitives
-    mutable std::mutex decoder_mutex_;
     std::atomic<bool> abort_requested_{false};
     std::atomic<bool> surface_paused_{false};     // surface destroyed -> pause rendering
     std::atomic<bool> stop_in_progress_{false};   // guard against double-stop
 
     // Components
-    streambridge::ffmpeg::FFmpegSubscriber subscriber_;
-    std::unique_ptr<streambridge::IVideoDecoder> video_decoder_;
-    std::unique_ptr<streambridge::IAudioDecoder> audio_decoder_;
+    std::unique_ptr<DemuxWorker> demux_worker_;
+    std::unique_ptr<VideoDecodeWorker> video_worker_;
+    std::unique_ptr<AudioDecodeWorker> audio_worker_;
     NativeVideoRenderer renderer_;
-    NativeAudioOutput audio_output_;
     streambridge::MediaClock clock_;
     streambridge::AVSyncController sync_controller_;
 
@@ -87,9 +88,9 @@ private:
     std::atomic<int64_t> first_video_pts_us_{-1};
     std::atomic<int64_t> first_audio_pts_us_{-1};
 
-    // Stream info (demux writes, decode reads)
-    const streambridge::StreamInfo* video_info_ = nullptr;
-    const streambridge::StreamInfo* audio_info_ = nullptr;
+    // Stream info snapshots (demux writes, decode reads)
+    std::optional<streambridge::StreamInfo> video_info_;
+    std::optional<streambridge::StreamInfo> audio_info_;
 };
 
 }  // namespace streambridge::android

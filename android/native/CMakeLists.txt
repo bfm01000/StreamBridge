@@ -4,6 +4,9 @@ project(streambridge_android LANGUAGES CXX)
 
 add_library(streambridge_android SHARED
     jni/streambridge_jni.cpp
+    playback/audio_decode_worker.cpp
+    playback/demux_worker.cpp
+    playback/hardware_buffer_frame.cpp
     playback/ffmpeg/ffmpeg_subscriber.cpp
     playback/ffmpeg/ffmpeg_video_decoder.cpp
     playback/ffmpeg/ffmpeg_audio_decoder.cpp
@@ -14,6 +17,8 @@ add_library(streambridge_android SHARED
     playback/playback_metrics.cpp
     playback/playback_queue_config.cpp
     playback/playback_reconnect_controller.cpp
+    playback/video_path_config.cpp
+    playback/video_decode_worker.cpp
 )
 
 target_compile_features(streambridge_android PRIVATE cxx_std_17)
@@ -53,5 +58,9 @@ target_link_libraries(streambridge_android
     avutil
     aaudio
     android
+    EGL
+    GLESv2
     log
+    mediandk
+    nativewindow
 )

@@ -5,6 +5,7 @@
 #include <string>
 
 #include "native_playback_session.h"
+#include "video_path_config.h"
 
 namespace {
 
@@ -41,13 +42,17 @@ Java_com_streambridge_android_NativeBridge_nativeStart(
         jclass,
         jlong handle,
         jstring url,
-        jobject surface) {
+        jobject surface,
+        jint decode_path) {
     NativePlaybackSession* session = from_handle(handle);
     if (session == nullptr) {
         return -1;
     }
     ANativeWindow* window = surface != nullptr ? ANativeWindow_fromSurface(env, surface) : nullptr;
-    int result = session->start(to_string(env, url), window);
+    int result = session->start(
+        to_string(env, url),
+        window,
+        streambridge::android::video_decode_path_from_int(decode_path));
     if (window != nullptr) {
         ANativeWindow_release(window);
     }

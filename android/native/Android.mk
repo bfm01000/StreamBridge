@@ -37,6 +37,9 @@ LOCAL_MODULE := streambridge_android
 LOCAL_SRC_FILES := \
     jni/streambridge_jni.cpp \
     platform/android_logging.cpp \
+    playback/audio_decode_worker.cpp \
+    playback/demux_worker.cpp \
+    playback/hardware_buffer_frame.cpp \
     playback/mediacodec/mediacodec_csd.cpp \
     playback/mediacodec/mediacodec_video_decoder.cpp \
     playback/native_audio_output.cpp \
@@ -45,6 +48,8 @@ LOCAL_SRC_FILES := \
     playback/playback_metrics.cpp \
     playback/playback_queue_config.cpp \
     playback/playback_reconnect_controller.cpp \
+    playback/video_path_config.cpp \
+    playback/video_decode_worker.cpp \
     ../../common/src/av_sync.cpp \
     ../../common/src/ffmpeg_utils.cpp \
     ../../common/src/ffmpeg/codec_config.cpp \
@@ -60,7 +65,7 @@ LOCAL_C_INCLUDES := \
     $(LOCAL_PATH)/../../third_party/ffmpeg-android/arm64-v8a/include
 
 LOCAL_CPPFLAGS := -std=c++17 -Wall -Wextra -Werror -DSTREAMBRIDGE_BUILD_VERSION=\"2026-08-11-57\"
-LOCAL_LDLIBS := -laaudio -landroid -llog -lmediandk
+LOCAL_LDLIBS := -laaudio -landroid -lEGL -lGLESv2 -llog -lmediandk -lnativewindow
 
 LOCAL_SHARED_LIBRARIES := avformat avcodec swscale swresample avutil
 

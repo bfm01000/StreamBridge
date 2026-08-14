@@ -7,22 +7,49 @@ import android.net.Network;
 import android.os.Bundle;
 import android.view.SurfaceHolder;
 import android.view.ViewGroup;
+import android.view.View;
+import android.widget.AdapterView;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.Spinner;
+import android.widget.ArrayAdapter;
 import android.widget.TextView;
 import android.widget.Toast;
 
 public final class MainActivity extends Activity implements SurfaceHolder.Callback, PlaybackEvents {
+    private static final String DEFAULT_RTMP_URL = "rtmp://192.168.31.57:1935/live/test";
+    private static final String[] STREAM_SOURCE_LABELS = {
+            "Custom URL",
+            "Camera /live/camera",
+            "File /live/file",
+            "Selftest /live/selftest",
+            "Test /live/test",
+            "Full AV /live/full"
+    };
+    private static final String[] STREAM_SOURCE_PATHS = {
+            null,
+            "/live/camera",
+            "/live/file",
+            "/live/selftest",
+            "/live/test",
+            "/live/full"
+    };
+
     private NativeBridge nativeBridge;
     private SystemMediaPlayerBackend mediaPlayerBackend;
     private AspectRatioSurfaceView surfaceView;
     private EditText urlInput;
     private TextView statusView;
+    private TextView metricsView;
+    private Spinner streamSourceSpinner;
+    private Spinner decodePathSpinner;
     private Button startButton;
     private Button stopButton;
     private Button testPatternButton;
     private Button tcpTestButton;
+    private volatile boolean statusPolling;
+    private Thread statusPollingThread;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -41,8 +68,43 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
         urlInput = new EditText(this);
         urlInput.setSingleLine(true);
-        urlInput.setText("rtmp://192.168.31.57:1935/live/test");
+        urlInput.setText(DEFAULT_RTMP_URL);
         root.addView(urlInput, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        streamSourceSpinner = new Spinner(this);
+        ArrayAdapter<String> streamAdapter = new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_item,
+                STREAM_SOURCE_LABELS);
+        streamAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        streamSourceSpinner.setAdapter(streamAdapter);
+        streamSourceSpinner.setSelection(4);
+        streamSourceSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                applySelectedStreamSource();
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+            }
+        });
+        root.addView(streamSourceSpinner, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        decodePathSpinner = new Spinner(this);
+        ArrayAdapter<String> pathAdapter = new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_item,
+                new String[] {
+                        "AUTO",
+                        "MEDIACODEC_AHB_GPU",
+                        "MEDIACODEC_SURFACE",
+                        "FFMPEG_SOFTWARE"
+                });
+        pathAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        decodePathSpinner.setAdapter(pathAdapter);
+        decodePathSpinner.setSelection(0);
+        root.addView(decodePathSpinner, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         // 第一行按钮：播放 / 停止 / HTTP备选
@@ -88,6 +150,11 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         root.addView(statusView, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
+        metricsView = new TextView(this);
+        metricsView.setText("Metrics: --");
+        root.addView(metricsView, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
         setContentView(root);
     }
 
@@ -119,6 +186,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     }
 
     private void startPlayback() {
+        applySelectedStreamSource();
         String url = urlInput.getText().toString().trim();
         if (url.isEmpty()) {
             onError("URL is empty");
@@ -144,7 +212,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 android.util.Log.e("StreamBridgeUI", "Network bind failed: " + e.getMessage());
             }
 
-            int result = nativeBridge.start(url, surfaceView.getHolder().getSurface());
+            int result = nativeBridge.start(url, surfaceView.getHolder().getSurface(),
+                    selectedDecodePath());
             if (result == 0) {
                 onStatus("Native playback started: " + nativeBridge.status());
                 pollNativeStatus();
@@ -161,12 +230,25 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     }
 
     private void pollNativeStatus() {
-        new Thread(() -> {
-            for (int i = 0; i < 600; i++) {  // poll up to 60s
-                try { Thread.sleep(100); } catch (InterruptedException e) { break; }
+        stopStatusPolling();
+        statusPolling = true;
+        statusPollingThread = new Thread(() -> {
+            while (statusPolling) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    break;
+                }
+                if (!statusPolling) {
+                    break;
+                }
                 String status = nativeBridge.status();
-                runOnUiThread(() -> statusView.setText(status));
+                runOnUiThread(() -> {
+                    statusView.setText(status);
+                    metricsView.setText(formatMetricsLine(status));
+                });
                 if (status.contains("Error") || status.contains("Stopped")) {
+                    statusPolling = false;
                     runOnUiThread(() -> {
                         setButtonsEnabled(true);
                         if (status.contains("Error")) {
@@ -176,7 +258,16 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                     return;
                 }
             }
-        }).start();
+        }, "StreamBridgeStatusPoll");
+        statusPollingThread.start();
+    }
+
+    private void stopStatusPolling() {
+        statusPolling = false;
+        if (statusPollingThread != null) {
+            statusPollingThread.interrupt();
+            statusPollingThread = null;
+        }
     }
 
     private void renderNativeTestPattern() {
@@ -192,6 +283,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     }
 
     private void stopPlayback() {
+        stopStatusPolling();
         if (mediaPlayerBackend != null) {
             mediaPlayerBackend.stop();
         }
@@ -199,18 +291,29 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         if (statusView != null) {
             statusView.setText("Stopped");
         }
+        if (metricsView != null) {
+            metricsView.setText("Metrics: --");
+        }
         setButtonsEnabled(true);
     }
 
     @Override
     public void onStatus(String message) {
-        runOnUiThread(() -> statusView.setText(message));
+        runOnUiThread(() -> {
+            statusView.setText(message);
+            if (metricsView != null) {
+                metricsView.setText(formatMetricsLine(message));
+            }
+        });
     }
 
     @Override
     public void onError(String message) {
         runOnUiThread(() -> {
             statusView.setText(message);
+            if (metricsView != null) {
+                metricsView.setText("Metrics: --");
+            }
             Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
         });
     }
@@ -219,6 +322,115 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         startButton.setEnabled(enabled);
         stopButton.setEnabled(enabled);
         testPatternButton.setEnabled(enabled);
+    }
+
+    private void applySelectedStreamSource() {
+        String path = selectedStreamPath();
+        if (path == null) {
+            return;
+        }
+        String currentUrl = urlInput.getText().toString().trim();
+        urlInput.setText(replaceRtmpPath(currentUrl, path));
+        urlInput.setSelection(urlInput.getText().length());
+    }
+
+    private String selectedStreamPath() {
+        if (streamSourceSpinner == null) {
+            return null;
+        }
+        int position = streamSourceSpinner.getSelectedItemPosition();
+        if (position < 0 || position >= STREAM_SOURCE_PATHS.length) {
+            return null;
+        }
+        return STREAM_SOURCE_PATHS[position];
+    }
+
+    private String replaceRtmpPath(String url, String path) {
+        String base = rtmpBase(url);
+        if (base == null) {
+            base = rtmpBase(DEFAULT_RTMP_URL);
+        }
+        if (base == null) {
+            return DEFAULT_RTMP_URL;
+        }
+        return base + path;
+    }
+
+    private String rtmpBase(String url) {
+        if (url == null) {
+            return null;
+        }
+        String trimmed = url.trim();
+        int schemeEnd = -1;
+        if (trimmed.startsWith("rtmp://")) {
+            schemeEnd = "rtmp://".length();
+        } else if (trimmed.startsWith("rtmps://")) {
+            schemeEnd = "rtmps://".length();
+        } else {
+            return null;
+        }
+
+        int pathStart = trimmed.indexOf('/', schemeEnd);
+        if (pathStart < 0) {
+            return trimmed;
+        }
+        return trimmed.substring(0, pathStart);
+    }
+
+    private int selectedDecodePath() {
+        if (decodePathSpinner == null) {
+            return NativeBridge.PATH_AUTO;
+        }
+        switch (decodePathSpinner.getSelectedItemPosition()) {
+            case 1:
+                return NativeBridge.PATH_MEDIACODEC_AHB_GPU;
+            case 2:
+                return NativeBridge.PATH_MEDIACODEC_SURFACE;
+            case 3:
+                return NativeBridge.PATH_FFMPEG_SOFTWARE;
+            case 0:
+            default:
+                return NativeBridge.PATH_AUTO;
+        }
+    }
+
+    private String formatMetricsLine(String status) {
+        String bitrate = metricValue(status, "bitrate");
+        String vfps = metricValue(status, "vfps");
+        String afps = metricValue(status, "afps");
+        String delay = metricValue(status, "buf_delay");
+        String avDiff = metricValue(status, "av_diff");
+        String drop = metricValue(status, "drop");
+        String render = metricValue(status, "render");
+
+        return "Metrics: bitrate=" + valueOrDash(bitrate) +
+                " vfps=" + valueOrDash(vfps) +
+                " afps=" + valueOrDash(afps) +
+                " delay=" + valueOrDash(delay) +
+                " av=" + valueOrDash(avDiff) +
+                " drop=" + valueOrDash(drop) +
+                " render=" + valueOrDash(render);
+    }
+
+    private String valueOrDash(String value) {
+        return value == null || value.isEmpty() ? "--" : value;
+    }
+
+    private String metricValue(String status, String key) {
+        if (status == null || key == null) {
+            return null;
+        }
+        String prefix = key + "=";
+        int start = status.indexOf(prefix);
+        if (start < 0) {
+            return null;
+        }
+        start += prefix.length();
+        int end = status.indexOf(' ', start);
+        if (end < 0) {
+            end = status.length();
+        }
+        return status.substring(start, end);
     }
 
     private void testTcpFromInput() {
