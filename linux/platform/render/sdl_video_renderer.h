@@ -49,6 +49,7 @@ private:
     int win_w_ = 0;
     int win_h_ = 0;
     std::vector<uint32_t> rgba_buf_;  // YUV→RGB 转换缓冲
+    int diag_frame_count_ = 0;        // 诊断：渲染帧计数（黑屏排查用）
 };
 
 }  // namespace streambridge

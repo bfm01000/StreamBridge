@@ -249,6 +249,7 @@ int main(int argc, char* argv[]) {
     std::string url;
     std::string audio_device = "default";
     bool no_audio = false;
+    bool test_pattern = false;
     int win_w = 1280, win_h = 720;
     int duration_s = 0;
     LogLevel log_level = LogLevel::Info;
@@ -259,6 +260,7 @@ int main(int argc, char* argv[]) {
         if (arg == "--url" && (argv[i+1] != nullptr)) url = argv[++i];
         else if (arg == "--audio-device") { const char* v = next(); if (v) audio_device = v; }
         else if (arg == "--no-audio") no_audio = true;
+        else if (arg == "--test-pattern") test_pattern = true;
         else if (arg == "--window") {
             const char* v = next();
             if (v) sscanf(v, "%dx%d", &win_w, &win_h);
@@ -274,11 +276,41 @@ int main(int argc, char* argv[]) {
         }
         else { usage(argv[0]); return 2; }
     }
-    if (url.empty()) { usage(argv[0]); return 2; }
+    if (url.empty() && !test_pattern) { usage(argv[0]); return 2; }
     set_log_level(log_level);
 
     Player p;
     p.url = url;
+
+    // --test-pattern：不拉流，渲染纯色测试帧（红→绿→蓝→白），
+    // 用于验证渲染/呈现链路与颜色通道映射（黑屏排查）
+    if (test_pattern) {
+        auto ret = p.renderer.open("StreamBridge Player", win_w, win_h);
+        if (ret.is_err()) {
+            SB_LOG_E("main", "renderer open failed: %s", ret.error_message().c_str());
+            return 1;
+        }
+        const uint32_t colors[4] = {0x000000FF, 0x0000FF00, 0x00FF0000, 0x00FFFFFF};  // RGBA 内存序
+        for (int c = 0; c < 4; c++) {
+            VideoFrame vf;
+            auto buf = std::make_shared<CpuFrameBuffer>(win_w * win_h * 4);
+            uint32_t* px = reinterpret_cast<uint32_t*>(buf->data());
+            for (int i = 0; i < win_w * win_h; i++) px[i] = colors[c];
+            vf.format = PixelFormat::RGBA;
+            vf.width = win_w;
+            vf.height = win_h;
+            vf.num_planes = 1;
+            vf.planes[0] = {buf->data(), win_w * static_cast<size_t>(win_h) * 4, win_w * 4, 0};
+            vf.buffer = buf;
+            SB_LOG_I("main", "test pattern #%d (0x%08x)", c, colors[c]);
+            p.renderer.render(vf);
+            for (int s = 0; s < 20 && !p.stop_source.stop_requested(); s++)
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        p.renderer.close();
+        SB_LOG_I("main", "test pattern done");
+        return 0;
+    }
 
     // 0. 先打开渲染窗口（窗口立即可见，避免拉流慢时黑屏等待）
     auto render_ret = p.renderer.open("StreamBridge Player", win_w, win_h);

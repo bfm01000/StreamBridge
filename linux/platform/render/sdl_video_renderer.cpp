@@ -64,8 +64,10 @@ Result<void> SDLVideoRenderer::ensure_texture(int frame_width, int frame_height)
         return Result<void>::ok();
     }
     if (texture_) SDL_DestroyTexture(texture_);
-    // streaming 纹理：每帧 SDL_UpdateTexture 整帧覆盖
-    texture_ = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_RGBA8888,
+    // streaming 纹理：每帧 SDL_UpdateTexture 整帧覆盖。
+    // 注意必须用 ARGB8888：SDL software renderer 对 RGBA8888 纹理不转换
+    // 字节序，会把数据当作 ARGB 解释（蓝通道丢失、颜色错位、近似黑屏）。
+    texture_ = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888,
                                  SDL_TEXTUREACCESS_STREAMING,
                                  frame_width, frame_height);
     if (!texture_) {
@@ -104,11 +106,23 @@ Result<void> SDLVideoRenderer::render(const VideoFrame& frame) {
                 int vv = v[(row / 2) * uv_stride + col / 2];
                 uint8_t r, g, b;
                 yuv_to_rgb(yy, uu, vv, r, g, b);
-                dst[static_cast<size_t>(row) * frame.width + col] = pack_rgba(r, g, b);
+                // ARGB8888 内存序（LE 字节 [B][G][R][A]）
+                dst[static_cast<size_t>(row) * frame.width + col] =
+                    (0xFFu << 24) | (static_cast<uint32_t>(r) << 16) |
+                    (static_cast<uint32_t>(g) << 8) | b;
             }
         }
     } else if (frame.format == PixelFormat::RGBA && frame.num_planes >= 1) {
-        memcpy(dst, frame.planes[0].data, rgba_buf_.size() * sizeof(uint32_t));
+        // 解码器输出 RGBA 内存序（LE 字节 [R][G][B][A]），转成 ARGB：
+        // 交换 R/B 并强制 A=255
+        const uint32_t* src = reinterpret_cast<const uint32_t*>(frame.planes[0].data);
+        for (size_t i = 0; i < rgba_buf_.size(); i++) {
+            uint32_t s = src[i];
+            dst[i] = 0xFF000000u |
+                     ((s & 0x000000FFu) << 16) |   // R -> 高 16 位
+                     (s & 0x0000FF00u) |           // G 不动
+                     ((s & 0x00FF0000u) >> 16);    // B -> 低 8 位
+        }
     } else {
         return Result<void>::err(ErrorDomain::Device, ErrorCode::CodecFormatUnsupported,
                                  "unsupported pixel format for SDL renderer");
@@ -129,6 +143,37 @@ Result<void> SDLVideoRenderer::render(const VideoFrame& frame) {
     SDL_RenderClear(renderer_);
     SDL_RenderCopy(renderer_, texture_, nullptr, &dst_rect);
     SDL_RenderPresent(renderer_);
+
+    // 诊断：每 60 帧回读渲染缓冲与窗口 surface，验证画面确实呈现（黑屏排查用）
+    if (++diag_frame_count_ % 60 == 0) {
+        SDL_GetWindowSize(window_, &win_w_, &win_h_);
+        int ww = win_w_, wh = win_h_;
+        if (ww > 0 && wh > 0) {
+            uint32_t bb = 0, ws = 0;
+            SDL_Surface* s = SDL_CreateRGBSurfaceWithFormat(0, ww, wh, 32,
+                                                            SDL_PIXELFORMAT_RGBA8888);
+            if (s && SDL_RenderReadPixels(renderer_, nullptr, SDL_PIXELFORMAT_RGBA8888,
+                                          s->pixels, s->pitch) == 0) {
+                const uint32_t* px = static_cast<const uint32_t*>(s->pixels);
+                int stride = s->pitch / 4;
+                bb = px[(lb.y + lb.h / 2) * stride + lb.x + lb.w / 2];
+            }
+            if (s) SDL_FreeSurface(s);
+            SDL_Surface* wsurf = SDL_GetWindowSurface(window_);
+            if (wsurf) {
+                SDL_LockSurface(wsurf);
+                const uint8_t* wp = static_cast<const uint8_t*>(wsurf->pixels);
+                int bypp = wsurf->format->BytesPerPixel;
+                int cx = lb.x + lb.w / 2, cy = lb.y + lb.h / 2;
+                const uint8_t* cp = wp + cy * wsurf->pitch + cx * bypp;
+                ws = SDL_MapRGB(wsurf->format, cp[0], cp[1], cp[2]);
+                SDL_UnlockSurface(wsurf);
+            }
+            SB_LOG_D("render", "diag: backbuffer=0x%08x window_surface=0x%08x "
+                  "(fmt=%s)", bb, ws,
+                  wsurf ? SDL_GetPixelFormatName(wsurf->format->format) : "null");
+        }
+    }
     return Result<void>::ok();
 }
 
