@@ -1,4 +1,5 @@
 #include "ffmpeg_rtmp_publisher.h"
+#include "streambridge/logging.h"
 
 extern "C" {
 #include <libavutil/opt.h>

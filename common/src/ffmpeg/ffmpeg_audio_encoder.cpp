@@ -111,6 +111,15 @@ Result<std::vector<MediaPacket>> FFmpegAudioEncoder::encode(AudioFrame frame) {
         acc_buffer_.clear();
     }
 
+    // 记录累积起点：acc 为空时，本帧首采样即下一个输出帧的时间基准。
+    // 输入帧 pts 为块末尾时刻，块首 = pts - duration。
+    if (acc_samples_ == 0) {
+        int64_t chunk_start = frame.pts.us;
+        if (frame.duration.us > 0) chunk_start -= frame.duration.us;
+        acc_pts_start_us_ = chunk_start;
+        acc_frame_idx_ = 0;  // 新一轮累积，帧内偏移重新计数
+    }
+
     // 将输入帧追加到累积缓冲
     int bytes_per_sample = av_get_bytes_per_sample(src_fmt);
     int incoming_bytes;
@@ -180,8 +189,14 @@ Result<std::vector<MediaPacket>> FFmpegAudioEncoder::encode(AudioFrame frame) {
                                     frame_size);
         if (converted <= 0) break;
         avf->nb_samples = converted;
-        // PTS in sample clock units
-        avf->pts = base_pts * frame_size;
+        // PTS：本输出帧首采样对应的真实采集时刻（单调时钟，与视频共享时间域），
+        // 换算为输出采样时钟单位。禁止用合成计数器 PTS——它丢掉了与视频的
+        // 起始偏移，且 XRUN/丢帧后与真实时间漂移。
+        int in_rate = swr_in_sample_rate_ > 0 ? swr_in_sample_rate_ : config_.sample_rate;
+        int64_t out_start_us = acc_pts_start_us_ >= 0
+            ? acc_pts_start_us_ + acc_frame_idx_ * frame_size * 1'000'000LL / in_rate
+            : acc_frame_idx_ * frame_size * 1'000'000LL / in_rate;
+        avf->pts = out_start_us * config_.sample_rate / 1'000'000;
 
         ret = avcodec_send_frame(codec_ctx_.get(), avf.get());
         if (ret >= 0 || ret == AVERROR(EAGAIN)) {
@@ -211,6 +226,7 @@ Result<std::vector<MediaPacket>> FFmpegAudioEncoder::encode(AudioFrame frame) {
         }
         acc_buffer_.resize(remaining);
         acc_samples_ -= frame_size;
+        acc_frame_idx_++;
         base_pts++;
         frame_count_++;
     }

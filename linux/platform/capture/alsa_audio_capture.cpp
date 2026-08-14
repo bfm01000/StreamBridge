@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <ctime>
 #include <thread>
 
 #include <alsa/asoundlib.h>
@@ -229,7 +230,15 @@ void ALSAAudioCapture::capture_loop() {
         af.channels = channels;
         af.num_samples = static_cast<int>(frames_read);
         af.duration = TimeDeltaUs::from_samples(af.num_samples, af.sample_rate);
-        af.pts.us = frame_idx * af.duration.us;
+        // 采集时刻取单调时钟（read 完成时刻，即本 chunk 最后一个采样的时间），
+        // 与视频共享同一时钟域；不再用 frame_idx×时长合成 PTS——
+        // 合成的时钟在 XRUN/丢帧后与真实时间漂移，导致音画逐渐不同步。
+        struct timespec ts{};
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        af.pts.us = static_cast<int64_t>(ts.tv_sec) * 1'000'000LL + ts.tv_nsec / 1000;
+        if (frame_idx < 3) {
+            SB_LOG_D("alsa", "chunk[%ld] pts=%ld", frame_idx, static_cast<long>(af.pts.us));
+        }
         af.frame_index = frame_idx;
         af.planes[0].data = buf->data(); af.planes[0].size = static_cast<size_t>(data_bytes); af.planes[0].stride = 0; af.planes[0].offset = 0;
         af.num_planes = 1;

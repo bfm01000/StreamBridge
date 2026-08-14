@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <ctime>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <fcntl.h>
@@ -501,7 +502,28 @@ void V4L2VideoCapture::capture_loop() {
         }
 
         if (vf.is_valid()) {
-            vf.pts.us = frame_idx * frame_duration_us.us;
+            // 采集时刻优先取驱动提供的单调时间戳（uvcvideo 在帧完成时打点，
+            // 比 DQBUF 出队时刻更接近真实曝光时间，避免排队延迟计入 PTS）；
+            // 驱动未提供时回退到出队时刻。与音频共用 CLOCK_MONOTONIC 时钟域。
+            struct timespec now_ts{};
+            clock_gettime(CLOCK_MONOTONIC, &now_ts);
+            int64_t cap_us = static_cast<int64_t>(now_ts.tv_sec) * 1'000'000LL
+                           + now_ts.tv_nsec / 1000;
+            if ((buf.flags & V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC) &&
+                (buf.timestamp.tv_sec != 0 || buf.timestamp.tv_usec != 0)) {
+                cap_us = static_cast<int64_t>(buf.timestamp.tv_sec) * 1'000'000LL
+                       + buf.timestamp.tv_usec;
+            }
+            if (frame_idx < 3) {
+                SB_LOG_D("v4l2", "frame[%ld] flags=0x%x ts=%ld.%06ld now=%lld -> pts=%lld",
+                      frame_idx, buf.flags,
+                      static_cast<long>(buf.timestamp.tv_sec),
+                      static_cast<long>(buf.timestamp.tv_usec),
+                      static_cast<long long>(now_ts.tv_sec) * 1'000'000LL
+                          + now_ts.tv_nsec / 1000,
+                      static_cast<long long>(cap_us));
+            }
+            vf.pts.us = cap_us;
             vf.duration = frame_duration_us;
             vf.frame_index = frame_idx;
             frame_idx++;
