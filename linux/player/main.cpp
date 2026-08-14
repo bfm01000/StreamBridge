@@ -170,6 +170,7 @@ void audio_loop(Player& p) {
 // ============================================================
 void video_loop(Player& p) {
     SB_LOG_I("video", "video decode/render thread started");
+    bool clock_started = false;
 
     while (!p.stop_source.stop_requested()) {
         MediaPacket pkt;
@@ -188,6 +189,16 @@ void video_loop(Player& p) {
                 if (!cpu) continue;  // 第一版只支持 CPU 帧
                 VideoFrame frame = cpu->frame;
                 TimePointUs pts{dec->pts_us};
+
+                // 无音频流（video-only）时主时钟必须以首帧启动：
+                // MediaClock 未启动时 now() 恒为 0，所有帧都会被判为
+                // 「超前」而长时间 Wait。有音频时音频线程会接管时钟。
+                if (!clock_started) {
+                    p.clock.start(pts);
+                    clock_started = true;
+                    SB_LOG_I("video", "master clock started from first video pts=%lld",
+                          static_cast<long long>(pts.us));
+                }
 
                 // 同步决策：视频 PTS vs 音频主时钟
                 auto d = p.sync.decide(pts, p.clock.now());

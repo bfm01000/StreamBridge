@@ -626,10 +626,9 @@ uptime=6s rendered=126 dropped=0 av_diff_us=69167 audio_frames=249 vq=51 aq=84 r
 ./player/streambridge_player --url rtmp://127.0.0.1:1935/live/android_camera
 ```
 
-当前 Android 推流为 video-only（无音频轨），且其视频 PTS 领先真实时钟
-~700ms 并持续增长（推流端时间戳待 Android AI 修复，见
-`docs/AI_COLLABORATION.md`）。播放端会按主时钟等待，因此该流渲染帧率
-仅 ~2fps 属预期行为——播放端逻辑正确，等 Android 端时间戳修复后自动恢复。
+当前 Android 推流为 video-only（无音频轨），播放端以首视频帧启动单调主时钟，
+渲染 30fps、av_diff 稳定 +60ms 左右。无音频时音画同步退化为「视频对齐单调时钟」
+（无唇音判定），音画同步验收需等 Android 端补音频轨。
 
 ### 9.6 常见问题
 

@@ -613,9 +613,9 @@ shared/interface-contract
 - 修改文件：`linux/player/{main.cpp,CMakeLists.txt}(新增)`、`linux/platform/render/sdl_video_renderer.{h,cpp}(新增)`、`linux/platform/output/alsa_audio_output.{h,cpp}(新增)`、`linux/platform/CMakeLists.txt`、`linux/CMakeLists.txt`、`common/src/ffmpeg/ffmpeg_subscriber.{h,cpp}`、`docs/build-and-run.md`、`docs/AI_COLLABORATION.md`。
 - 环境变更：`~/local` FFmpeg 重编译为 n7.1.1（稳定版，见 Decision Log）。
 - 验证结果：ffmpeg 模拟推流（640x480 25fps + AAC）→ player 播放：rendered≈23fps、av_diff_us 收敛 42~120ms、dropped=0、reconnects=0；`ctest` 2/2 通过；**已实际拉通 Android 推的 `/live/android_camera`（958x1280 视频流）**。
-- 给 Android AI 的信息（重要）：
+- 给 Android AI 的信息（重要，2026-08-14 二次修正）：
   1. Linux 播放端已就绪并可直拉 `/live/android_camera`；
-  2. 发现 Android 推流端 PTS 问题：视频 PTS 领先真实时钟约 700ms 且持续增长（Linux 播放端 av_diff_us 375ms→739ms 上升、vq 持续满载），且流元数据无帧率（fps=-nan）。播放端按音频主时钟等待导致渲染仅 ~2fps。请 Android AI 排查推流端时间戳来源（应统一单调时钟，参照 Linux 推流端的 AvStartAligner 方案）；
+  2. ~~Android 推流端 PTS 漂移~~ 已排除：此前播放端 av_diff 持续增大、渲染仅 2fps 的根因是 **Linux 播放端自身 bug**——video-only 流时 MediaClock 从未启动（now() 恒为 0，每帧被判定「超前」长时间 Wait）。已修复：无音频时以首视频帧启动主时钟，现 30fps 稳定渲染、av_diff ≈ +60ms。Android 推流 PTS（10/44/78ms 递增）正常；
   3. Android 推流目前无音频轨（video-only），音画同步验证需等音频轨就绪。
 
 ## 10. Update Checklist
