@@ -180,7 +180,7 @@ inline SampleFormat from_av_sample_format(AVSampleFormat fmt) {
 }
 
 // ============================================================
-// Frame conversion (implemented in common/src/ffmpeg_utils.cpp)
+// Frame conversion (implemented in common/src/core/ffmpeg_utils.cpp)
 // ============================================================
 
 VideoFrame avframe_to_videoframe(const AVFrame* avf, AVRational tb);

@@ -743,6 +743,32 @@ shared/interface-contract
 - 状态更新：阶段 5 从待联调推进为已验证；P-009 流源选择提议已落地；真机安装/运行相关历史阻塞不再作为当前主线阻塞。
 - 剩余建议：后续可进入收尾优化，包括真正端到端延迟时间戳方案、长时间稳定性报告、重连/切流专项记录和文档清账。
 
+### 2026-08-14 Android AI Camera RTMP Publish MVP
+
+- 完成内容：新增 Android 反向推流 MVP，支持 Android 相机采集并通过 RTMP 推给 Linux/SRS。
+- Android 采集链路：新增纯 Java `AndroidCameraRtmpPublisher`，使用 Camera2 打开后置相机，Camera 输出直接进入 `MediaCodec` H.264 encoder input Surface，避免相机帧 CPU 拷贝；Android 端继续禁用 Kotlin。
+- Native 推流链路：新增 `NativeRtmpPublishSession`，通过 JNI 接收 MediaCodec 输出的 H.264 `csd-0/csd-1` 和 encoded packet，复用公共 `FFmpegRTMPPublisher` 写 FLV/RTMP。
+- UI 接入：播放页新增“相机推流”按钮，复用当前 URL 输入框作为推流地址；自动申请 Camera 权限；推流前复用当前网络绑定逻辑，降低 Android POSIX socket 走错网络导致的连接失败。
+- 构建接入：Android native 构建加入 `publish/native_rtmp_publish_session.cpp` 和 `common/src/ffmpeg/ffmpeg_rtmp_publisher.cpp`；Manifest 新增 `CAMERA` 权限。
+- 公共修复：`FFmpegRTMPPublisher::open()` 新增 `stop_source_.reset()`，避免 stop/interrupt 后同一个 publisher 对象再次 open 时被旧 stop token 立即中断。
+- 当前边界：本阶段为 video-only，相机视频规格固定为 1280x720、30 fps、2 Mbps、H.264 baseline、GOP 2 秒；音频 `AudioRecord -> AAC -> RTMP` 尚未接入。
+- 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功；`compileDebugKotlin NO-SOURCE`；APK 输出 `android/app/build/outputs/apk/debug/app-debug.apk`，大小 `6,550,320` bytes，时间 `2026-08-14 16:04:25`；未安装、未运行 App。
+- Linux 端验证建议：Android 填写 `rtmp://<linux_ip>:1935/live/android_camera` 并点击“相机推流”；Linux 端用 `ffprobe rtmp://127.0.0.1:1935/live/android_camera` 或 `ffplay -fflags nobuffer -flags low_delay rtmp://127.0.0.1:1935/live/android_camera` 验证。
+
+### 2026-08-14 Android AI Dual Page UI And Camera Preview Publish
+
+- 完成内容：Android UI 从单页改为主页入口选择，主页提供“直播推流接收端”和“Android采集推流端”两个入口。
+- 接收端页面：保留 RTMP 拉流播放、流源选择、解码路径选择、TCP 测试、状态和性能指标显示。
+- 推流端页面：新增独立相机预览画面、RTMP URL 输入、开始/停止推流、TCP 测试和推流状态显示。
+- 预览链路：`AndroidCameraRtmpPublisher` 的 Camera2 capture session 同时输出到 `MediaCodec` encoder input Surface 和页面预览 Surface；推流时 Android 本机可以看到相机画面。
+- 验证结果：`powershell -ExecutionPolicy Bypass -File scripts\android-verify.ps1` 构建成功；`compileDebugKotlin NO-SOURCE`；APK 输出 `android/app/build/outputs/apk/debug/app-debug.apk`，大小 `6,550,320` bytes，时间 `2026-08-14 16:15:03`；未安装、未运行 App。
+
+### 2026-08-14 Android AI Camera Publish Validation Guide
+
+- 完成内容：新增 `docs/android-camera-publish-validation.md`，专门说明 Android 相机采集推流到 Linux/SRS 的验证流程。
+- 文档内容：包含 Linux 启动 SRS、获取 Linux LAN IP、使用 `ffplay`/`ffprobe` 查看 Android 推流、Android 构建安装、App 操作步骤、预期结果、排查顺序、常见问题和验收标准。
+- 当前边界：文档按 video-only MVP 编写，明确音频尚未接入，推流参数暂固定为 1280x720/30fps/2Mbps/H.264 baseline。
+
 ## 10. Update Checklist
 
 每轮结束前检查：

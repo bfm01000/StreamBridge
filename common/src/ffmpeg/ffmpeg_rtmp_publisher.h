@@ -30,6 +30,7 @@ private:
 
     PublishConfig config_;
     AVFormatWritePtr fmt_ctx_;
+    AVIOContext* raw_pb_ = nullptr;
     StopSource stop_source_;
     StopToken stop_token_;  // 保持 StopToken 存活，避免 interrupt callback 的悬垂指针
     std::atomic<bool> interrupted_{false};
@@ -39,8 +40,10 @@ private:
 
     AVStream* video_stream_ = nullptr;
     AVStream* audio_stream_ = nullptr;
+    StreamInfo raw_video_stream_;
     TimePointUs stream_start_us_{0};
     bool header_written_ = false;
+    bool raw_flv_mode_ = false;
 };
 
 }  // namespace streambridge

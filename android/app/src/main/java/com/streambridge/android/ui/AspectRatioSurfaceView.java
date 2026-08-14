@@ -1,4 +1,4 @@
-package com.streambridge.android;
+package com.streambridge.android.ui;
 
 import android.content.Context;
 import android.util.AttributeSet;
@@ -7,6 +7,7 @@ import android.view.SurfaceView;
 public final class AspectRatioSurfaceView extends SurfaceView {
     private int aspectWidth = 16;
     private int aspectHeight = 9;
+    private int maxHeightPx = 0;
 
     public AspectRatioSurfaceView(Context context) {
         super(context);
@@ -25,18 +26,27 @@ public final class AspectRatioSurfaceView extends SurfaceView {
         requestLayout();
     }
 
+    public void setMaxHeightPx(int heightPx) {
+        maxHeightPx = Math.max(0, heightPx);
+        requestLayout();
+    }
+
     @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         int measuredWidth = MeasureSpec.getSize(widthMeasureSpec);
-        int maxHeight = MeasureSpec.getSize(heightMeasureSpec);
-
-        if (measuredWidth <= 0 || maxHeight <= 0) {
+        if (measuredWidth <= 0) {
             super.onMeasure(widthMeasureSpec, heightMeasureSpec);
             return;
         }
 
         int measuredHeight = measuredWidth * aspectHeight / aspectWidth;
-        if (MeasureSpec.getMode(heightMeasureSpec) != MeasureSpec.UNSPECIFIED &&
+        if (maxHeightPx > 0 && measuredHeight > maxHeightPx) {
+            measuredHeight = maxHeightPx;
+            measuredWidth = measuredHeight * aspectWidth / aspectHeight;
+        }
+        int heightMode = MeasureSpec.getMode(heightMeasureSpec);
+        int maxHeight = MeasureSpec.getSize(heightMeasureSpec);
+        if (heightMode != MeasureSpec.UNSPECIFIED &&
                 measuredHeight > maxHeight) {
             measuredHeight = maxHeight;
             measuredWidth = measuredHeight * aspectWidth / aspectHeight;

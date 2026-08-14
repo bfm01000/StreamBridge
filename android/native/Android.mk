@@ -37,6 +37,7 @@ LOCAL_MODULE := streambridge_android
 LOCAL_SRC_FILES := \
     jni/streambridge_jni.cpp \
     platform/android_logging.cpp \
+    publish/native_rtmp_publish_session.cpp \
     playback/audio_decode_worker.cpp \
     playback/demux_worker.cpp \
     playback/hardware_buffer_frame.cpp \
@@ -50,18 +51,22 @@ LOCAL_SRC_FILES := \
     playback/playback_reconnect_controller.cpp \
     playback/video_path_config.cpp \
     playback/video_decode_worker.cpp \
-    ../../common/src/av_sync.cpp \
-    ../../common/src/ffmpeg_utils.cpp \
+    ../../common/src/core/av_sync.cpp \
+    ../../common/src/core/ffmpeg_utils.cpp \
     ../../common/src/ffmpeg/codec_config.cpp \
     ../../common/src/ffmpeg/ffmpeg_video_decoder.cpp \
     ../../common/src/ffmpeg/ffmpeg_audio_decoder.cpp \
+    ../../common/src/ffmpeg/ffmpeg_rtmp_publisher.cpp \
     ../../common/src/ffmpeg/ffmpeg_subscriber.cpp \
-    ../../common/src/session_utils.cpp
+    ../../common/src/core/session_utils.cpp
 
 LOCAL_C_INCLUDES := \
     $(LOCAL_PATH)/playback \
+    $(LOCAL_PATH)/publish \
     $(LOCAL_PATH)/../../common/include \
     $(LOCAL_PATH)/../../common/src \
+    $(LOCAL_PATH)/../../common/src/core \
+    $(LOCAL_PATH)/../../common/src/ffmpeg \
     $(LOCAL_PATH)/../../third_party/ffmpeg-android/arm64-v8a/include
 
 LOCAL_CPPFLAGS := -std=c++17 -Wall -Wextra -Werror -DSTREAMBRIDGE_BUILD_VERSION=\"2026-08-11-57\"

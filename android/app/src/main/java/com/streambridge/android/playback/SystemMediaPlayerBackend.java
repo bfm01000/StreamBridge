@@ -1,4 +1,4 @@
-package com.streambridge.android;
+package com.streambridge.android.playback;
 
 import android.media.AudioAttributes;
 import android.media.MediaPlayer;
@@ -6,31 +6,31 @@ import android.view.Surface;
 
 import java.io.IOException;
 
-final class SystemMediaPlayerBackend {
+public final class SystemMediaPlayerBackend {
     private final PlaybackEvents events;
     private MediaPlayer mediaPlayer;
     private Surface surface;
     private String pendingUrl;
 
-    SystemMediaPlayerBackend(PlaybackEvents events) {
+    public SystemMediaPlayerBackend(PlaybackEvents events) {
         this.events = events;
     }
 
-    void setSurface(Surface newSurface) {
+    public void setSurface(Surface newSurface) {
         surface = newSurface;
         if (mediaPlayer != null) {
             mediaPlayer.setSurface(surface);
         }
     }
 
-    void clearSurface() {
+    public void clearSurface() {
         surface = null;
         if (mediaPlayer != null) {
             mediaPlayer.setSurface(null);
         }
     }
 
-    void start(String url) {
+    public void start(String url) {
         pendingUrl = url;
         stop();
 
@@ -74,13 +74,13 @@ final class SystemMediaPlayerBackend {
         }
     }
 
-    void retryIfPending() {
+    public void retryIfPending() {
         if (pendingUrl != null && mediaPlayer == null) {
             start(pendingUrl);
         }
     }
 
-    void stop() {
+    public void stop() {
         if (mediaPlayer == null) {
             return;
         }

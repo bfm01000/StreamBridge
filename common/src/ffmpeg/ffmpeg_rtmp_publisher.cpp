@@ -1,5 +1,7 @@
 #include "ffmpeg_rtmp_publisher.h"
 
+#include <vector>
+
 extern "C" {
 #include <libavutil/opt.h>
 }
@@ -13,6 +15,134 @@ static int interrupt_cb(void* opaque) {
     return token->stop_requested() ? 1 : 0;
 }
 
+namespace {
+
+void write_be24(AVIOContext* pb, uint32_t value) {
+    avio_w8(pb, static_cast<int>((value >> 16) & 0xFF));
+    avio_w8(pb, static_cast<int>((value >> 8) & 0xFF));
+    avio_w8(pb, static_cast<int>(value & 0xFF));
+}
+
+void write_be32(AVIOContext* pb, uint32_t value) {
+    avio_w8(pb, static_cast<int>((value >> 24) & 0xFF));
+    avio_w8(pb, static_cast<int>((value >> 16) & 0xFF));
+    avio_w8(pb, static_cast<int>((value >> 8) & 0xFF));
+    avio_w8(pb, static_cast<int>(value & 0xFF));
+}
+
+int find_start_code(const uint8_t* data, size_t size, size_t offset, int& start_len) {
+    for (size_t i = offset; i + 3 <= size; ++i) {
+        if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1) {
+            start_len = 3;
+            return static_cast<int>(i);
+        }
+        if (i + 4 <= size && data[i] == 0 && data[i + 1] == 0 &&
+            data[i + 2] == 0 && data[i + 3] == 1) {
+            start_len = 4;
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+std::vector<std::vector<uint8_t>> split_annexb_nals(const uint8_t* data, size_t size) {
+    std::vector<std::vector<uint8_t>> nals;
+    size_t offset = 0;
+    while (offset < size) {
+        int sc_len = 0;
+        int sc_pos = find_start_code(data, size, offset, sc_len);
+        if (sc_pos < 0) {
+            break;
+        }
+        size_t nal_start = static_cast<size_t>(sc_pos + sc_len);
+        int next_len = 0;
+        int next_pos = find_start_code(data, size, nal_start, next_len);
+        size_t nal_end = next_pos >= 0 ? static_cast<size_t>(next_pos) : size;
+        if (nal_end > nal_start) {
+            nals.emplace_back(data + nal_start, data + nal_end);
+        }
+        offset = nal_end;
+    }
+    return nals;
+}
+
+int h264_nal_type(const std::vector<uint8_t>& nal) {
+    return nal.empty() ? 0 : (nal[0] & 0x1F);
+}
+
+std::vector<uint8_t> make_avcc_extradata(const std::vector<uint8_t>& annexb_config) {
+    auto nals = split_annexb_nals(annexb_config.data(), annexb_config.size());
+    std::vector<uint8_t> sps;
+    std::vector<uint8_t> pps;
+    for (const auto& nal : nals) {
+        int type = h264_nal_type(nal);
+        if (type == 7 && sps.empty()) {
+            sps = nal;
+        } else if (type == 8 && pps.empty()) {
+            pps = nal;
+        }
+    }
+    if (sps.empty() || pps.empty()) {
+        return {};
+    }
+
+    std::vector<uint8_t> avcc;
+    avcc.reserve(11 + sps.size() + pps.size());
+    avcc.push_back(1);
+    avcc.push_back(sps.size() > 1 ? sps[1] : 0x42);
+    avcc.push_back(sps.size() > 2 ? sps[2] : 0x00);
+    avcc.push_back(sps.size() > 3 ? sps[3] : 0x1F);
+    avcc.push_back(0xFF);
+    avcc.push_back(0xE1);
+    avcc.push_back(static_cast<uint8_t>((sps.size() >> 8) & 0xFF));
+    avcc.push_back(static_cast<uint8_t>(sps.size() & 0xFF));
+    avcc.insert(avcc.end(), sps.begin(), sps.end());
+    avcc.push_back(1);
+    avcc.push_back(static_cast<uint8_t>((pps.size() >> 8) & 0xFF));
+    avcc.push_back(static_cast<uint8_t>(pps.size() & 0xFF));
+    avcc.insert(avcc.end(), pps.begin(), pps.end());
+    return avcc;
+}
+
+std::vector<uint8_t> annexb_packet_to_avcc(const uint8_t* data, size_t size) {
+    auto nals = split_annexb_nals(data, size);
+    if (nals.empty()) {
+        return std::vector<uint8_t>(data, data + size);
+    }
+
+    std::vector<uint8_t> out;
+    for (const auto& nal : nals) {
+        int type = h264_nal_type(nal);
+        if (type == 7 || type == 8 || type == 9) {
+            continue;
+        }
+        uint32_t len = static_cast<uint32_t>(nal.size());
+        out.push_back(static_cast<uint8_t>((len >> 24) & 0xFF));
+        out.push_back(static_cast<uint8_t>((len >> 16) & 0xFF));
+        out.push_back(static_cast<uint8_t>((len >> 8) & 0xFF));
+        out.push_back(static_cast<uint8_t>(len & 0xFF));
+        out.insert(out.end(), nal.begin(), nal.end());
+    }
+    return out;
+}
+
+void write_flv_tag(AVIOContext* pb,
+                   uint8_t tag_type,
+                   uint32_t timestamp_ms,
+                   const std::vector<uint8_t>& payload) {
+    avio_w8(pb, tag_type);
+    write_be24(pb, static_cast<uint32_t>(payload.size()));
+    write_be24(pb, timestamp_ms & 0xFFFFFF);
+    avio_w8(pb, static_cast<int>((timestamp_ms >> 24) & 0xFF));
+    write_be24(pb, 0);
+    if (!payload.empty()) {
+        avio_write(pb, payload.data(), static_cast<int>(payload.size()));
+    }
+    write_be32(pb, static_cast<uint32_t>(11 + payload.size()));
+}
+
+}  // namespace
+
 FFmpegRTMPPublisher::FFmpegRTMPPublisher() = default;
 
 FFmpegRTMPPublisher::~FFmpegRTMPPublisher() {
@@ -21,12 +151,24 @@ FFmpegRTMPPublisher::~FFmpegRTMPPublisher() {
 
 Result<void> FFmpegRTMPPublisher::open(const PublishConfig& config) {
     config_ = config;
+    stop_source_.reset();
+    stop_token_ = stop_source_.token();
+    AVIOInterruptCB int_cb = {interrupt_cb, stop_token_.as_opaque()};
 
     // 创建 FLV 格式输出 context
     const AVOutputFormat* fmt = av_guess_format("flv", nullptr, nullptr);
     if (!fmt) {
-        return Result<void>::err(ErrorDomain::Config, ErrorCode::InvalidConfig,
-                                 "FLV muxer not found");
+        int ret = avio_open2(&raw_pb_, config.url.c_str(), AVIO_FLAG_WRITE, &int_cb, nullptr);
+        if (ret < 0) {
+            char err[AV_ERROR_MAX_STRING_SIZE] = {0};
+            av_strerror(ret, err, sizeof(err));
+            return Result<void>::err(ErrorDomain::Network, ErrorCode::NetworkConnectFailed,
+                                     std::string("Cannot connect raw FLV RTMP: ") + err);
+        }
+        raw_flv_mode_ = true;
+        interrupted_ = false;
+        is_open_ = true;
+        return Result<void>::ok();
     }
 
     AVFormatContext* ctx = nullptr;
@@ -38,8 +180,6 @@ Result<void> FFmpegRTMPPublisher::open(const PublishConfig& config) {
     fmt_ctx_.reset(ctx);
 
     // 配置 interrupt callback — 必须先将 token 存为成员，避免临时对象悬垂
-    stop_token_ = stop_source_.token();
-    AVIOInterruptCB int_cb = {interrupt_cb, stop_token_.as_opaque()};
     ctx->interrupt_callback = int_cb;
 
     // 打开 IO（avio_open 在 write_header 之前调用）
@@ -101,6 +241,36 @@ Result<void> FFmpegRTMPPublisher::write_header(const StreamInfo& video_stream,
                                  "Publisher not open");
     }
 
+    if (raw_flv_mode_) {
+        if (!video_stream.is_video()) {
+            return Result<void>::err(ErrorDomain::Config, ErrorCode::InvalidConfig,
+                                     "raw FLV fallback requires video stream");
+        }
+        std::vector<uint8_t> avcc = make_avcc_extradata(video_stream.codec_extradata);
+        if (avcc.empty()) {
+            return Result<void>::err(ErrorDomain::Codec, ErrorCode::InvalidCodecConfig,
+                                     "raw FLV fallback missing H.264 SPS/PPS");
+        }
+
+        const uint8_t header[] = {'F', 'L', 'V', 1, 1, 0, 0, 0, 9, 0, 0, 0, 0};
+        avio_write(raw_pb_, header, static_cast<int>(sizeof(header)));
+
+        std::vector<uint8_t> payload;
+        payload.reserve(5 + avcc.size());
+        payload.push_back(0x17);
+        payload.push_back(0);
+        payload.push_back(0);
+        payload.push_back(0);
+        payload.push_back(0);
+        payload.insert(payload.end(), avcc.begin(), avcc.end());
+        write_flv_tag(raw_pb_, 9, 0, payload);
+        avio_flush(raw_pb_);
+
+        raw_video_stream_ = video_stream;
+        header_written_ = true;
+        return Result<void>::ok();
+    }
+
     AVFormatContext* ctx = fmt_ctx_.get();
 
     // 创建视频流
@@ -132,6 +302,43 @@ Result<void> FFmpegRTMPPublisher::write_packet(const MediaPacket& packet) {
     if (!is_open_ || !header_written_) {
         return Result<void>::err(ErrorDomain::Internal, ErrorCode::InvalidState,
                                  "Publisher not ready");
+    }
+
+    if (raw_flv_mode_) {
+        if (!packet.is_video()) {
+            return Result<void>::ok();
+        }
+        std::vector<uint8_t> avcc_payload =
+            annexb_packet_to_avcc(packet.data.data(), packet.data.size());
+        if (avcc_payload.empty()) {
+            return Result<void>::ok();
+        }
+
+        int64_t dts_us = packet.dts.us >= 0 ? packet.dts.us : packet.pts.us;
+        int64_t cts_us = packet.pts.us - dts_us;
+        uint32_t timestamp_ms = dts_us > 0 ? static_cast<uint32_t>(dts_us / 1000) : 0;
+        int32_t cts_ms = static_cast<int32_t>(cts_us / 1000);
+
+        std::vector<uint8_t> payload;
+        payload.reserve(5 + avcc_payload.size());
+        payload.push_back(packet.is_key_frame ? 0x17 : 0x27);
+        payload.push_back(1);
+        payload.push_back(static_cast<uint8_t>((cts_ms >> 16) & 0xFF));
+        payload.push_back(static_cast<uint8_t>((cts_ms >> 8) & 0xFF));
+        payload.push_back(static_cast<uint8_t>(cts_ms & 0xFF));
+        payload.insert(payload.end(), avcc_payload.begin(), avcc_payload.end());
+        write_flv_tag(raw_pb_, 9, timestamp_ms, payload);
+        avio_flush(raw_pb_);
+
+        if (raw_pb_->error < 0) {
+            char err[AV_ERROR_MAX_STRING_SIZE] = {0};
+            av_strerror(raw_pb_->error, err, sizeof(err));
+            return Result<void>::err(ErrorDomain::Network, ErrorCode::NetworkWriteFailed,
+                                     std::string("raw FLV write: ") + err);
+        }
+        bytes_written_ += static_cast<int64_t>(payload.size() + 15);
+        packets_written_++;
+        return Result<void>::ok();
     }
 
     AVFormatContext* ctx = fmt_ctx_.get();
@@ -170,6 +377,10 @@ Result<void> FFmpegRTMPPublisher::write_packet(const MediaPacket& packet) {
 }
 
 void FFmpegRTMPPublisher::close() {
+    if (raw_pb_) {
+        avio_flush(raw_pb_);
+        avio_closep(&raw_pb_);
+    }
     if (fmt_ctx_ && fmt_ctx_->pb) {
         if (header_written_) {
             av_write_trailer(fmt_ctx_.get());
@@ -180,6 +391,7 @@ void FFmpegRTMPPublisher::close() {
     video_stream_ = nullptr;
     audio_stream_ = nullptr;
     header_written_ = false;
+    raw_flv_mode_ = false;
     is_open_ = false;
 }
 

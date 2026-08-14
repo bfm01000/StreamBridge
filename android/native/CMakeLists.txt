@@ -4,6 +4,7 @@ project(streambridge_android LANGUAGES CXX)
 
 add_library(streambridge_android SHARED
     jni/streambridge_jni.cpp
+    publish/native_rtmp_publish_session.cpp
     playback/audio_decode_worker.cpp
     playback/demux_worker.cpp
     playback/hardware_buffer_frame.cpp
@@ -19,13 +20,16 @@ add_library(streambridge_android SHARED
     playback/playback_reconnect_controller.cpp
     playback/video_path_config.cpp
     playback/video_decode_worker.cpp
+    ../../common/src/ffmpeg/ffmpeg_rtmp_publisher.cpp
 )
 
 target_compile_features(streambridge_android PRIVATE cxx_std_17)
 
 target_include_directories(streambridge_android PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/playback
+    ${CMAKE_CURRENT_SOURCE_DIR}/publish
     ${CMAKE_CURRENT_SOURCE_DIR}/../../common/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../common/src/ffmpeg
     ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/ffmpeg-android/arm64-v8a/include
 )
 
