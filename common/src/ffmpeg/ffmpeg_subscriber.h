@@ -12,6 +12,7 @@ extern "C" {
 
 #include "streambridge/media_errors.h"
 #include "streambridge/media_types.h"
+#include "streambridge/stop_token.h"
 
 namespace streambridge::ffmpeg {
 
@@ -43,6 +44,10 @@ public:
     // 关闭连接，清理资源
     void close();
 
+    // 唤醒阻塞中的 read_packet()：使 av_read_frame 立即返回错误，
+    // 供外部在停止/重连前调用（close 期间 read_packet 不能并发调用）
+    void interrupt();
+
     // 是否已打开
     bool is_open() const { return fmt_ctx_ != nullptr; }
 
@@ -61,6 +66,10 @@ private:
     streambridge::StreamInfo audio_info_;
 
     int64_t packet_seq_ = 0;
+
+    // IO 中断（配合 StopToken）
+    streambridge::StopSource stop_source_;
+    streambridge::StopToken stop_token_ = stop_source_.token();
 
     // True when container uses length-prefixed NALs (avcC/hvcC) → need Annex-B conversion
     bool need_annexb_conversion_ = false;

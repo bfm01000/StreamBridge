@@ -186,6 +186,7 @@
 | 2026-08-09 | FFmpeg for Android 使用 `--disable-all` 最小化构建 | Windows `CreateProcess` 命令行长度限制 ~32767 字符，完整 FFmpeg 的 .o 文件数（1000+）导致链接/归档步骤截断参数；`--disable-all` + 仅启用 H.264/AAC 解码/FLV 解封装/RTMP 协议后，总 .so 体积 ~3.5MB | Android FFmpeg 构建 | Android AI | 否 |
 | 2026-08-09 | FFmpeg for Android 使用 MSYS2 UCRT64 gcc 15.2.0 作为 Host C 编译器 | NDK clang 无法直接作为 Windows Host 编译器（缺少 MinGW 库）；MSYS2 gcc 在 PATH 最前面才能让内部工具（cc1/as/ld）找到其 DLL；使用 `--pkg-config=false --disable-sdl2` 等标志隔离开 MSYS2 环境对 Android 编译的污染 | Android FFmpeg 构建 | Android AI | 否 |
 | 2026-08-14 | 采集/编码 PTS 统一使用 CLOCK_MONOTONIC（V4L2 优先驱动 buf.timestamp，ALSA 用 read 完成时刻）；设备源双路以「较晚启动的一路」为零点对齐并丢弃另一路早期包 | 修复 camera+ALSA 音画不同步：合成计数器 PTS 在丢帧/XRUN 后漂移，且两路启动时刻差产生恒定偏移；文件源共享 demux 时间线天然对齐，设备源必须显式对齐 | Shared（AvStartAligner）/ Linux 推流端 | Linux AI | 是（Android AI 播放端关注时间戳语义；未来 Android 推流复用 AvStartAligner） |
+| 2026-08-14 | `~/local` FFmpeg 从 master 快照 1fdbca8 重编译为稳定版 **n7.1.1**（同 configure flags，`PKG_CONFIG_PATH=~/local/lib/pkgconfig`） | master 快照的 RTMP 拉流对 SRS 直播流返回 Input/output error（静态 7.0.2 与 Android 端构建均正常），阻塞 Linux 播放端里程碑；重编译为稳定版后恢复正常 | Linux 构建/运行环境（推流端 + 播放端共用 ~/local FFmpeg） | Linux AI | 是（Android AI 需知 Linux 端 FFmpeg 版本变化） |
 
 ## 6. Pending Changes
 
@@ -201,6 +202,7 @@
 | P-008 | Android | 确认 Android SDK/NDK/Gradle/AGP 版本 | 已使用 Android SDK 37、NDK 28.2.13676358、AGP 9.3.0、Gradle 9.5.0 完成 debug 构建 | `:android:app:assembleDebug` 已通过 | 无直接影响 | DONE |
 | P-009 | Linux | Android 播放端 UI 新增「流源选择列表」，让用户选择接收哪一路直播推流（camera / 本地视频 / 自检彩条等） | 用户需求：Linux 端现可推多种源（V4L2 camera、file 后端本地视频、lavfi 自检源），Android 端目前只有单一 URL 输入框 + 按钮，切换流源需要手动改 URL 文本 | MainActivity 把 URL 输入框改为可展开的流源列表（预设常用流名），点击条目 = 按现有生命周期 stop 旧流 → start 新 URL；复用现有 startPlayback/stopPlayback，不新增 Session 类型 | 建议 Linux 端固定推流名约定：`/live/camera`、`/live/file`、`/live/selftest`；Android 列表项按「显示名 → rtmp://&lt;host&gt;:1935/live/&lt;name&gt;」映射，host 部分保留可编辑。「本地视频」语义待确认：优先理解为 Linux file 后端推的流（rtmp 拉流）；Android 设备本地文件直放是另一种语义（MediaPlayer 后端已支持），由 Android AI 与用户确认是否同时需要 | PROPOSED，待 Android AI 确认 |
 | P-010 | Linux | common 层音画同步修复：新增 `AvStartAligner`（common/include），session mux 环路接入双路起始对齐；`FFmpegAudioEncoder` PTS 改为采集时钟域（原为合成计数器）；采集端（linux/platform）PTS 统一 CLOCK_MONOTONIC | 修复 camera+ALSA 音画不同步（文件源同步正常，设备源漂移）：音频编码器输出 PTS 被归零到自己的计数器时间轴、视频为绝对时钟，两路时间轴错位；且双路启动时刻差产生恒定偏移 | Android 播放端无直接影响（推流路径）；`AvStartAligner` 是公共纯逻辑类，未来 Android 推流（反向链路）可直接复用 | mux/编码行为变化：文件源两路同一时间线，对齐逻辑对其无副作用 | DONE（用户指示实施，已通过 10s 录制验证：drift +9ms、start skew +20ms；测试见 docs/testing-guide.md） |
+| P-011 | Linux | common 层新增 `FFmpegSubscriber::interrupt()`（IO 中断回调，唤醒阻塞中的 read_packet）+ Linux 播放端里程碑（SDL2 渲染 + ALSA 输出 + player 主程序） | Linux 侧需要支持拉流播放（反向链路：Android 推流 → Linux 播放）；订阅器原本无法安全停止阻塞读 | Android 播放端不受影响（interrupt 是新增方法，Android 重连逻辑可选用）；公共订阅器行为向后兼容 | 新增 linux/player 与 linux/platform/{render,output} 目录 | DONE（用户指示实施，单边验证通过：ffmpeg 模拟推流 → Linux player 正常播放） |
 
 ## 7. Blockers
 
@@ -600,6 +602,21 @@ shared/interface-contract
   - `av_sync_capture_test`（真实 camera+ALSA 走生产链路录制 10s 到 `source/av_sync_test.flv` 并离线分析；设备缺失时 SKIP）。
 - 验证结果：10s 录制：start skew +20ms、drift +9ms、v/a max gap 45/78ms、PASS；`ctest` 2/2 通过。
 - 修改文件：`linux/platform/capture/{v4l2_video_capture,alsa_audio_capture}.cpp`、`common/src/ffmpeg/ffmpeg_audio_encoder.{h,cpp}`、`common/src/session_impl.cpp`、`common/include/streambridge/av_start_aligner.h(新增)`、`common/tests/av_start_aligner_test.cpp(新增)`、`linux/tests/av_sync_capture_test.cpp(新增)`、`linux/tests/CMakeLists.txt`、`docs/testing-guide.md`、`docs/AI_COLLABORATION.md`、`.gitignore`。
+
+### 2026-08-14 Linux AI Playback Side (Reverse Link) — Linux Player
+
+- 完成内容：Linux 端拉流播放链路（反向链路里程碑：Android 推流 → Linux 播放）：
+  1. `SDLVideoRenderer`（linux/platform/render）：SDL2 窗口渲染，YUV420P→RGBA→纹理，letterbox 等比居中；强制 x11 + software renderer（虚拟机 GL 崩溃）；
+  2. `ALSAAudioOutput`（linux/platform/output）：ALSA 播放（S16 interleaved），`played_frames()` 暴露实际播放进度（写入-设备缓冲剩余）供 MediaClock 使用，XRUN 自动恢复；
+  3. `streambridge_player`（linux/player）：demux/音频/视频三线程；复用 common 的 `FFmpegSubscriber`/`FFmpegVideoDecoder`/`FFmpegAudioDecoder`/`MediaClock`/`AVSyncController`；压缩包队列 ByDuration 2s 且不丢包（满时等待）；断流自动重连；
+  4. `FFmpegSubscriber` 新增 `interrupt()`（IO 中断回调，安全唤醒阻塞读）。
+- 修改文件：`linux/player/{main.cpp,CMakeLists.txt}(新增)`、`linux/platform/render/sdl_video_renderer.{h,cpp}(新增)`、`linux/platform/output/alsa_audio_output.{h,cpp}(新增)`、`linux/platform/CMakeLists.txt`、`linux/CMakeLists.txt`、`common/src/ffmpeg/ffmpeg_subscriber.{h,cpp}`、`docs/build-and-run.md`、`docs/AI_COLLABORATION.md`。
+- 环境变更：`~/local` FFmpeg 重编译为 n7.1.1（稳定版，见 Decision Log）。
+- 验证结果：ffmpeg 模拟推流（640x480 25fps + AAC）→ player 播放：rendered≈23fps、av_diff_us 收敛 42~120ms、dropped=0、reconnects=0；`ctest` 2/2 通过；**已实际拉通 Android 推的 `/live/android_camera`（958x1280 视频流）**。
+- 给 Android AI 的信息（重要）：
+  1. Linux 播放端已就绪并可直拉 `/live/android_camera`；
+  2. 发现 Android 推流端 PTS 问题：视频 PTS 领先真实时钟约 700ms 且持续增长（Linux 播放端 av_diff_us 375ms→739ms 上升、vq 持续满载），且流元数据无帧率（fps=-nan）。播放端按音频主时钟等待导致渲染仅 ~2fps。请 Android AI 排查推流端时间戳来源（应统一单调时钟，参照 Linux 推流端的 AvStartAligner 方案）；
+  3. Android 推流目前无音频轨（video-only），音画同步验证需等音频轨就绪。
 
 ## 10. Update Checklist
 

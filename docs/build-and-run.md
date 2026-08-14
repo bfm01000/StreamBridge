@@ -540,3 +540,65 @@ Android native 层当前已具备这些播放基础模块：
 - `NativeAudioOutput`：AAudio 输出 interleaved S16，并读取或估算实际播放帧位置。
 
 注意：`MediaPlayer` 对 RTMP 的支持取决于设备系统能力。如果设备系统不支持 RTMP，可先用 HTTP MP4/HLS URL 验证 Android 播放 UI、Surface 和音频输出；稳定 RTMP 播放仍需要后续接入 Android FFmpeg ABI。
+
+---
+
+## 9. Linux 播放端（反向链路：拉流 → 解码 → 同步 → 播放）
+
+Linux 端播放 Android 推流（或任意 RTMP 源）。架构依据 `docs/architecture.md`：
+反向链路复用公共订阅/解码/同步模块，平台差异在 video renderer（SDL2）与
+audio output（ALSA）中隔离。
+
+### 9.1 构建
+
+```bash
+cd linux/build
+cmake .. -DCMAKE_BUILD_TYPE=Release   # 依赖 SDL2（apt install libsdl2-dev）
+make -j$(nproc) streambridge_player
+```
+
+### 9.2 运行
+
+```bash
+# 播放任意 RTMP 流（不依赖 Android 推流端即可单边验证）
+./player/streambridge_player --url rtmp://127.0.0.1:1935/live/full
+
+# 常用选项
+#   --audio-device <dev>  ALSA 播放设备（默认 default）
+#   --no-audio            禁用音频
+#   --window 1280x720     窗口尺寸
+#   --duration 15         播放 15s 后自动退出（0=直到 ESC/关闭窗口）
+#   --log-level debug     排查用
+```
+
+按键：`ESC` 或 `q` 退出。
+
+### 9.3 单边验证（模拟 Android 推流端）
+
+```bash
+# 终端 1：用本地文件模拟 Android 端推流（SRS 需已运行）
+~/workspace/tools/ffmpeg-7.0.2-amd64-static/ffmpeg -re \
+  -i /home/bfm01000/下载/FRXXZ.mp4 -c copy -f flv \
+  rtmp://127.0.0.1:1935/live/simulated
+
+# 终端 2：Linux 播放端拉流播放
+./player/streambridge_player --url rtmp://127.0.0.1:1935/live/simulated --duration 20
+```
+
+### 9.4 播放指标
+
+每 2 秒输出：`rendered`（已渲染帧）、`dropped`（同步丢弃帧）、
+`av_diff_us`（视频 PTS - 音频主时钟，正=视频超前）、`audio_frames`（已播帧）、
+`vq/aq`（压缩包队列水位）、`reconnects`（重连次数）。
+
+验收参考（720p30 + AAC48k）：`rendered` 增速 ≈ 30fps，`av_diff_us` 稳定在
+±50ms 内，`dropped` 偶发（CPU 不足时），`reconnects=0`。
+
+### 9.5 常见问题
+
+- **拉流失败 / 播放器卡在打开阶段**：确认 SRS 在跑（`ss -tlnp | grep 1935`）、
+  流名存在（`ffprobe rtmp://127.0.0.1:1935/live/<name>`）；
+  `~/local` FFmpeg 需为 n7.1.1+（master 快照 1fdbca8 的 RTMP 拉流有回归）。
+- **无画面**：确认有图形环境（`echo $DISPLAY`）；无头环境暂不支持。
+- **无声**：`arecord -l` 确认设备存在；`--audio-device default` 路由失败时
+  试 `hw:0,0`（ES1371 虚拟机环境用 `--audio-device hw:0,0`）。

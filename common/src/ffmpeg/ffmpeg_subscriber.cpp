@@ -123,6 +123,13 @@ int64_t ts_to_us(int64_t ts, AVRational tb) {
 
 }  // namespace
 
+// FFmpeg IO 中断回调：StopToken 请求停止时让 av_read_frame 立即返回
+static int subscriber_interrupt_cb(void* opaque) {
+    if (!opaque) return 0;
+    auto* token = static_cast<streambridge::StopToken*>(opaque);
+    return token->stop_requested() ? 1 : 0;
+}
+
 FFmpegSubscriber::FFmpegSubscriber() = default;
 
 FFmpegSubscriber::~FFmpegSubscriber() {
@@ -158,6 +165,11 @@ streambridge::Result<void> FFmpegSubscriber::open(const std::string& url) {
             msg);
     }
     fmt_ctx_ = ctx;
+
+    // 挂接 IO 中断回调：stop 或 reconnect 前调用 interrupt() 可唤醒阻塞读
+    stop_token_ = stop_source_.token();
+    AVIOInterruptCB int_cb = {subscriber_interrupt_cb, stop_token_.as_opaque()};
+    fmt_ctx_->interrupt_callback = int_cb;
 
     // 查找流信息
     ret = avformat_find_stream_info(fmt_ctx_, nullptr);
@@ -376,6 +388,10 @@ void FFmpegSubscriber::close() {
     has_video_ = false;
     has_audio_ = false;
     packet_seq_ = 0;
+}
+
+void FFmpegSubscriber::interrupt() {
+    stop_source_.request_stop();
 }
 
 streambridge::CodecId FFmpegSubscriber::map_codec_id(AVCodecID id) {
