@@ -3,8 +3,10 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
+#include "streambridge/media_queue.h"
 #include "streambridge/media_types.h"
 #include "ffmpeg_rtmp_publisher.h"
 
@@ -31,10 +33,17 @@ public:
     std::string status_text() const;
 
 private:
+    static MediaQueue<MediaPacket>::Config queue_config();
+    void writer_loop();
+
     mutable std::mutex mutex_;
     FFmpegRTMPPublisher publisher_;
+    MediaQueue<MediaPacket> packet_queue_;
+    std::thread writer_thread_;
     bool running_ = false;
-    int64_t packet_count_ = 0;
+    int64_t queued_count_ = 0;
+    int64_t written_count_ = 0;
+    int64_t key_count_ = 0;
     int64_t first_pts_us_ = -1;
     std::string status_ = "PublishIdle";
 };

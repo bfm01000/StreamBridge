@@ -20,8 +20,6 @@ import android.view.WindowManager;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.TimeUnit;
 
 import com.streambridge.android.core.BuildInfo;
 import com.streambridge.android.core.NativeBridge;
@@ -58,27 +56,16 @@ public final class AndroidCameraRtmpPublisher {
     private String selectedCameraId;
     private CameraCaptureSession captureSession;
     private Thread encoderThread;
-    private Thread writerThread;
-    private ArrayBlockingQueue<EncodedPacket> packetQueue;
     private volatile boolean running;
     private volatile boolean publisherStarted;
     private String publishUrl;
-    private long packetsWritten;
-    private long packetsDropped;
     private long encoderStatsStartMs;
-    private long writerStatsStartMs;
     private long encoderOutputFrames;
     private long encoderOutputBytes;
     private long encoderKeyFrames;
     private long encoderDequeueTimeouts;
     private long encoderLastPtsUs = Long.MIN_VALUE;
     private long encoderPtsGapMaxUs;
-    private long writerOutputFrames;
-    private long writerOutputBytes;
-    private long writerKeyFrames;
-    private long writerWriteTotalUs;
-    private long writerWriteMaxUs;
-    private long writerPollTimeouts;
     private int activeWidth = WIDTH;
     private int activeHeight = HEIGHT;
     private int activeBitrateBps = BITRATE_BPS;
@@ -112,10 +99,7 @@ public final class AndroidCameraRtmpPublisher {
         }
         publishUrl = url;
         previewSurface = preview;
-        packetsWritten = 0;
-        packetsDropped = 0;
         resetFlowStats();
-        packetQueue = new ArrayBlockingQueue<>(90);
         publisherStarted = false;
         running = true;
         android.util.Log.i(TAG, "start VERSION=" + BuildInfo.VERSION);
@@ -137,9 +121,7 @@ public final class AndroidCameraRtmpPublisher {
         stopGlRouter();
         stopEncoder();
         nativeBridge.stopPublish();
-        stopWriter();
         publisherStarted = false;
-        packetQueue = null;
         previewSurface = null;
         events.onPublishStatus("Camera publish stopped");
     }
@@ -486,7 +468,6 @@ public final class AndroidCameraRtmpPublisher {
                     return;
                 }
                 publisherStarted = true;
-                startWriter();
                 events.onPublishStatus("RTMP publisher started "
                         + activeWidth + "x" + activeHeight);
                 continue;
@@ -507,12 +488,18 @@ public final class AndroidCameraRtmpPublisher {
                     outputBuffer.get(packet);
                     boolean keyFrame = (info.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
                     recordEncoderOutput(info.size, info.presentationTimeUs, keyFrame);
-                    enqueuePacket(new EncodedPacket(
+                    int writeResult = nativeBridge.writeVideoPacket(
                             packet,
                             info.presentationTimeUs,
                             info.presentationTimeUs,
                             frameDurationUs,
-                            keyFrame));
+                            keyFrame);
+                    if (writeResult != 0) {
+                        events.onPublishError("Native publisher enqueue failed: "
+                                + writeResult + " " + nativeBridge.publishStatus());
+                        running = false;
+                    }
+                    maybeLogEncoderStats();
                 }
             } finally {
                 encoder.releaseOutputBuffer(index, false);
@@ -524,94 +511,15 @@ public final class AndroidCameraRtmpPublisher {
         }
     }
 
-    private void enqueuePacket(EncodedPacket packet) {
-        ArrayBlockingQueue<EncodedPacket> queue = packetQueue;
-        if (queue == null) {
-            return;
-        }
-        if (queue.offer(packet)) {
-            maybeLogEncoderStats();
-            return;
-        }
-        if (packet.keyFrame) {
-            packetsDropped += queue.size();
-            queue.clear();
-        } else {
-            EncodedPacket dropped = queue.poll();
-            if (dropped != null) {
-                packetsDropped++;
-            }
-        }
-        if (!queue.offer(packet)) {
-            packetsDropped++;
-        }
-        maybeLogEncoderStats();
-    }
-
-    private void startWriter() {
-        if (writerThread != null) {
-            return;
-        }
-        writerThread = new Thread(this::writePackets, "StreamBridgeCameraRtmpWriter");
-        writerThread.start();
-    }
-
-    private void writePackets() {
-        while (running || (packetQueue != null && !packetQueue.isEmpty())) {
-            EncodedPacket packet = null;
-            try {
-                ArrayBlockingQueue<EncodedPacket> queue = packetQueue;
-                if (queue != null) {
-                    packet = queue.poll(100, TimeUnit.MILLISECONDS);
-                }
-            } catch (InterruptedException e) {
-                if (!running) {
-                    break;
-                }
-            }
-            if (packet == null) {
-                writerPollTimeouts++;
-                maybeLogWriterStats();
-                continue;
-            }
-
-            long writeStartNs = System.nanoTime();
-            int writeResult = nativeBridge.writeVideoPacket(
-                    packet.data,
-                    packet.ptsUs,
-                    packet.dtsUs,
-                    packet.durationUs,
-                    packet.keyFrame);
-            long writeUs = (System.nanoTime() - writeStartNs) / 1_000L;
-            if (writeResult != 0) {
-                events.onPublishError("Native publisher write failed: "
-                        + writeResult + " " + nativeBridge.publishStatus());
-                running = false;
-                break;
-            }
-
-            packetsWritten++;
-            recordWriterOutput(packet, writeUs);
-            maybeLogWriterStats();
-        }
-    }
-
     private void resetFlowStats() {
         long nowMs = System.currentTimeMillis();
         encoderStatsStartMs = nowMs;
-        writerStatsStartMs = nowMs;
         encoderOutputFrames = 0;
         encoderOutputBytes = 0;
         encoderKeyFrames = 0;
         encoderDequeueTimeouts = 0;
         encoderLastPtsUs = Long.MIN_VALUE;
         encoderPtsGapMaxUs = 0;
-        writerOutputFrames = 0;
-        writerOutputBytes = 0;
-        writerKeyFrames = 0;
-        writerWriteTotalUs = 0;
-        writerWriteMaxUs = 0;
-        writerPollTimeouts = 0;
     }
 
     private void recordEncoderOutput(int size, long ptsUs, boolean keyFrame) {
@@ -627,24 +535,12 @@ public final class AndroidCameraRtmpPublisher {
         encoderLastPtsUs = ptsUs;
     }
 
-    private void recordWriterOutput(EncodedPacket packet, long writeUs) {
-        writerOutputFrames++;
-        writerOutputBytes += packet.data.length;
-        if (packet.keyFrame) {
-            writerKeyFrames++;
-        }
-        writerWriteTotalUs += writeUs;
-        writerWriteMaxUs = Math.max(writerWriteMaxUs, writeUs);
-    }
-
     private void maybeLogEncoderStats() {
         long nowMs = System.currentTimeMillis();
         long elapsedMs = nowMs - encoderStatsStartMs;
         if (elapsedMs < 1_000L) {
             return;
         }
-        ArrayBlockingQueue<EncodedPacket> queue = packetQueue;
-        int queued = queue != null ? queue.size() : 0;
         long bitrateKbps = elapsedMs <= 0 ? 0 : encoderOutputBytes * 8L / elapsedMs;
         android.util.Log.i(TAG, "flow encoder frames=" + encoderOutputFrames
                 + " key=" + encoderKeyFrames
@@ -652,8 +548,7 @@ public final class AndroidCameraRtmpPublisher {
                 + " bitrateKbps=" + bitrateKbps
                 + " dequeueTimeouts=" + encoderDequeueTimeouts
                 + " ptsGapMaxUs=" + encoderPtsGapMaxUs
-                + " q=" + queued
-                + " drop=" + packetsDropped
+                + " native=" + nativeBridge.publishStatus()
                 + " elapsedMs=" + elapsedMs);
         encoderStatsStartMs = nowMs;
         encoderOutputFrames = 0;
@@ -661,38 +556,6 @@ public final class AndroidCameraRtmpPublisher {
         encoderKeyFrames = 0;
         encoderDequeueTimeouts = 0;
         encoderPtsGapMaxUs = 0;
-    }
-
-    private void maybeLogWriterStats() {
-        long nowMs = System.currentTimeMillis();
-        long elapsedMs = nowMs - writerStatsStartMs;
-        if (elapsedMs < 1_000L) {
-            return;
-        }
-        ArrayBlockingQueue<EncodedPacket> queue = packetQueue;
-        int queued = queue != null ? queue.size() : 0;
-        long bitrateKbps = elapsedMs <= 0 ? 0 : writerOutputBytes * 8L / elapsedMs;
-        long avgWriteUs = writerOutputFrames == 0 ? 0 : writerWriteTotalUs / writerOutputFrames;
-        android.util.Log.i(TAG, "flow writer frames=" + writerOutputFrames
-                + " key=" + writerKeyFrames
-                + " bytes=" + writerOutputBytes
-                + " bitrateKbps=" + bitrateKbps
-                + " q=" + queued
-                + " drop=" + packetsDropped
-                + " writeAvgUs=" + avgWriteUs
-                + " writeMaxUs=" + writerWriteMaxUs
-                + " pollTimeouts=" + writerPollTimeouts
-                + " elapsedMs=" + elapsedMs
-                + " native=" + nativeBridge.publishStatus());
-        events.onPublishStatus(nativeBridge.publishStatus()
-                + " q=" + queued + " drop=" + packetsDropped);
-        writerStatsStartMs = nowMs;
-        writerOutputFrames = 0;
-        writerOutputBytes = 0;
-        writerKeyFrames = 0;
-        writerWriteTotalUs = 0;
-        writerWriteMaxUs = 0;
-        writerPollTimeouts = 0;
     }
 
     private byte[] byteBufferToArray(ByteBuffer buffer) {
@@ -768,18 +631,6 @@ public final class AndroidCameraRtmpPublisher {
         releaseEncoder();
     }
 
-    private void stopWriter() {
-        if (writerThread != null) {
-            writerThread.interrupt();
-            try {
-                writerThread.join(1_000);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-            writerThread = null;
-        }
-    }
-
     private void stopGlRouter() {
         if (glFrameRouter != null) {
             glFrameRouter.stop();
@@ -834,23 +685,4 @@ public final class AndroidCameraRtmpPublisher {
         }
     }
 
-    private static final class EncodedPacket {
-        final byte[] data;
-        final long ptsUs;
-        final long dtsUs;
-        final long durationUs;
-        final boolean keyFrame;
-
-        EncodedPacket(byte[] data,
-                      long ptsUs,
-                      long dtsUs,
-                      long durationUs,
-                      boolean keyFrame) {
-            this.data = data;
-            this.ptsUs = ptsUs;
-            this.dtsUs = dtsUs;
-            this.durationUs = durationUs;
-            this.keyFrame = keyFrame;
-        }
-    }
 }
