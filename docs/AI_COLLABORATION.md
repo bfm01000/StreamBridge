@@ -12,7 +12,7 @@
 | 阶段 2：公共接口确认 | DONE | Linux AI | `common/` 8 个头文件已实现，接口体系稳定。 |
 | 阶段 3：Android 构建集成 | DONE | Android AI | Java + JNI + C++ native Android 工程已创建，`assembleDebug` 构建通过；真实 FFmpeg 播放链路待后续里程碑接入。 |
 | 阶段 4：Linux 构建集成 | DONE | Linux AI | CMake 工程完成，M2 video-only + M3 audio/video 推流验证通过。 |
-| 阶段 5：端到端联调 | TODO | Android AI / Linux AI | 两端基于已确认公共接口做联调验证。 |
+| 阶段 5：端到端联调 | TODO | Android AI / Linux AI | 两端基于已确认公共接口做联调验证。Linux 推流端已具备三种真实可用源：`/live/camera`（V4L2 摄像头）、`/live/file`（本地文件）、`/live/selftest`（lavfi 彩条）。 |
 
 状态枚举：
 
@@ -198,14 +198,15 @@
 | P-006 | Shared | 确认是否创建最小单边验证脚本 | 用本地文件/FFmpeg/Python 模拟对端，减少跨机器等待 | Android 可独立验证播放端 | Linux 可独立验证推流端 | PROPOSED |
 | P-007 | Linux | 确认 Linux 端在没有真实摄像头的情况下如何验证视频采集 | 虚拟机无 /dev/video* 设备；Milestone 2 需要先使用本地文件或 lavfi 模拟视频输入，等后续有物理机或 USB 直通再验证真实摄像头 | 无直接影响 | 影响 Milestone 2 的验证方式 | PROPOSED，需要用户决策 |
 | P-008 | Android | 确认 Android SDK/NDK/Gradle/AGP 版本 | 已使用 Android SDK 37、NDK 28.2.13676358、AGP 9.3.0、Gradle 9.5.0 完成 debug 构建 | `:android:app:assembleDebug` 已通过 | 无直接影响 | DONE |
+| P-009 | Linux | Android 播放端 UI 新增「流源选择列表」，让用户选择接收哪一路直播推流（camera / 本地视频 / 自检彩条等） | 用户需求：Linux 端现可推多种源（V4L2 camera、file 后端本地视频、lavfi 自检源），Android 端目前只有单一 URL 输入框 + 按钮，切换流源需要手动改 URL 文本 | MainActivity 把 URL 输入框改为可展开的流源列表（预设常用流名），点击条目 = 按现有生命周期 stop 旧流 → start 新 URL；复用现有 startPlayback/stopPlayback，不新增 Session 类型 | 建议 Linux 端固定推流名约定：`/live/camera`、`/live/file`、`/live/selftest`；Android 列表项按「显示名 → rtmp://&lt;host&gt;:1935/live/&lt;name&gt;」映射，host 部分保留可编辑。「本地视频」语义待确认：优先理解为 Linux file 后端推的流（rtmp 拉流）；Android 设备本地文件直放是另一种语义（MediaPlayer 后端已支持），由 Android AI 与用户确认是否同时需要 | PROPOSED，待 Android AI 确认 |
 
 ## 7. Blockers
 
 | 编号 | 阻塞项 | 阻塞端 | 需要谁处理 | 需要的信息 | 临时绕过方案 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- |
 | B-001 | 架构尚未确认 | Android / Linux / Shared | 用户 | 用户已要求两端开始执行 | 两端已进入实现；后续架构冲突仍需先记录再确认 | DONE |
-| B-002 | FFmpeg 缺少 libx264 软件编码器 | Linux | Linux AI / 用户 | 当前 FFmpeg 自编译版本未启用 libx264（需要 `--enable-libx264 --enable-gpl`）。需安装 `libx264-dev` 并重新编译 FFmpeg，或改用系统包管理器提供的 FFmpeg。重新编译约需 5-15 分钟 | 在 Milestone 1 之前不需要 libx264（M1 用 FFmpeg 命令推流，可以使用系统 FFmpeg 或预编译的带 libx264 的 FFmpeg binary）；M2/M3 开始需要 libx264 | BLOCKED（阻塞 Milestone 2+ 的 C++ 编码链路；M1 可以用系统包或 side-install FFmpeg 绕过） |
-| B-003 | 虚拟机无摄像头设备 | Linux | Linux AI / 用户 | /dev/video* 不存在；USB 摄像头直通需要 VMware/VirtualBox 配置或使用物理机 | M2/M3 的视频采集验证可用本地文件/lavfi 测试源代替 | BLOCKED（阻塞真实摄像头采集验证，但不阻塞 Milestone 1 和编码推流路径验证） |
+| B-002 | FFmpeg 缺少 libx264 软件编码器 | Linux | Linux AI / 用户 | 当前 FFmpeg 自编译版本未启用 libx264（需要 `--enable-libx264 --enable-gpl`）。需安装 `libx264-dev` 并重新编译 FFmpeg，或改用系统包管理器提供的 FFmpeg。重新编译约需 5-15 分钟 | 在 Milestone 1 之前不需要 libx264（M1 用 FFmpeg 命令推流，可以使用系统 FFmpeg 或预编译的带 libx264 的 FFmpeg binary）；M2/M3 开始需要 libx264 | DONE（2026-08-14：~/local 自编译 FFmpeg 已含 libx264.a，M2/M3 编码推流已验证） |
+| B-003 | 虚拟机无摄像头设备 | Linux | Linux AI / 用户 | /dev/video* 不存在；USB 摄像头直通需要 VMware/VirtualBox 配置或使用物理机 | M2/M3 的视频采集验证可用本地文件/lavfi 测试源代替 | DONE（2026-08-14：USB 摄像头已直通，/dev/video0 可用，MJPG 1280x720@30，真实摄像头推流已验证） |
 | B-004 | 本机缺 Android 构建工具 | Android | 用户 / Android AI | 已安装 NDK r28b，并使用 Android Studio JBR、SDK、Gradle Wrapper 完成构建 | `gradlew.bat :android:app:assembleDebug --offline --no-daemon` 已通过 | DONE |
 | B-005 | 真机拒绝安装 debug APK | Android | 用户 | 设备需允许 USB 安装或未知来源安装 | APK 已构建成功，可待设备设置放开后重试安装 | BLOCKED |
 
@@ -569,6 +570,16 @@ shared/interface-contract
 - 行为边界：本阶段不改变播放行为、不改变 MediaCodec zero-copy 优先策略、不改变 FFmpeg fallback、不改变压缩 packet 不丢包策略；只是把策略和指标从 Session 中剥离。
 - 验证结果：按用户要求本轮未构建、未安装；仅做静态文本检查，确认旧 metrics 成员引用已移除，新 cpp 已加入 Android 构建脚本。
 - 下一步建议：第二阶段再拆 `DemuxWorker`，把 `FFmpegSubscriber`、RTMP read loop、packet push、connection_lost 逻辑从 Session 中移出。
+
+### 2026-08-14 Linux AI V4L2 Camera Color Fix & Stream-Source Proposal
+
+- 完成内容：
+  1. 修复 v4l2 MJPEG 推流黑白画面：本机摄像头 MJPG 解码输出为 yuvj422p（4:2:2 全范围），原代码按固定 420 布局 memcpy 色度导致黑白；改为 sws_scale 按解码器实际输出格式自适应转换到受限范围 YUV420P。
+  2. 提交重构 + 修复两个 commit（FFmpeg 工具/日志模块统一到 common；色度修复）。
+  3. 真实摄像头推流首次验证通过：USB 直通 `/dev/video0`（MJPG 1280x720@30），拉流解码统计色度与源 JPEG 一致。
+- 修改文件：`linux/platform/capture/v4l2_video_capture.{h,cpp}`、`common/include/streambridge/{ffmpeg_utils,logging}.h`、`common/src/logging.cpp`、`linux/app/main.cpp`、`linux/platform/{CMakeLists.txt,ffmpeg_utils.h,logger.h(新增)}`、`docs/build-and-run.md`、`docs/AI_COLLABORATION.md`。
+- 验证结果：`make -j$(nproc)` 通过；推流 28s cap=836 drop=0；拉流 90 帧 U/V std 5.5/7.2（修复前 2.8/1.9）。
+- 给 Android AI 的请求：**见 P-009** —— 播放端 UI 新增流源选择列表，让用户选择接收 camera / 本地视频 / 自检彩条等不同直播推流，待确认后实施。
 
 ## 10. Update Checklist
 
