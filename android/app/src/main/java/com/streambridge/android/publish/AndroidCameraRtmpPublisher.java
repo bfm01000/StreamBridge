@@ -39,6 +39,9 @@ public final class AndroidCameraRtmpPublisher {
     private static final int FRAME_RATE = 30;
     private static final int BITRATE_BPS = 2_000_000;
     private static final int I_FRAME_INTERVAL_SEC = 2;
+    private static final int AUDIO_SAMPLE_RATE = 48_000;
+    private static final int AUDIO_CHANNELS = 1;
+    private static final int AUDIO_BITRATE_BPS = 96_000;
 
     private final Context context;
     private final NativeBridge nativeBridge;
@@ -58,7 +61,12 @@ public final class AndroidCameraRtmpPublisher {
     private Thread encoderThread;
     private volatile boolean running;
     private volatile boolean publisherStarted;
+    private volatile boolean audioConfigRetryScheduled;
+    private final Object publishConfigLock = new Object();
     private String publishUrl;
+    private byte[] videoCsd0;
+    private byte[] videoCsd1;
+    private byte[] audioCsd0;
     private long encoderStatsStartMs;
     private long encoderOutputFrames;
     private long encoderOutputBytes;
@@ -66,6 +74,8 @@ public final class AndroidCameraRtmpPublisher {
     private long encoderDequeueTimeouts;
     private long encoderLastPtsUs = Long.MIN_VALUE;
     private long encoderPtsGapMaxUs;
+    private long firstVideoCodecPtsUs = Long.MIN_VALUE;
+    private long firstVideoMonoPtsUs = Long.MIN_VALUE;
     private int activeWidth = WIDTH;
     private int activeHeight = HEIGHT;
     private int activeBitrateBps = BITRATE_BPS;
@@ -97,18 +107,29 @@ public final class AndroidCameraRtmpPublisher {
             events.onPublishError("Camera permission missing");
             return;
         }
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            events.onPublishError("Record audio permission missing");
+            return;
+        }
         publishUrl = url;
         previewSurface = preview;
         resetFlowStats();
         publisherStarted = false;
+        synchronized (publishConfigLock) {
+            videoCsd0 = null;
+            videoCsd1 = null;
+            audioCsd0 = null;
+        }
         running = true;
         android.util.Log.i(TAG, "start VERSION=" + BuildInfo.VERSION);
         try {
             prepareCameraGeometry();
             startEncoder();
             startGlRouter();
+            startNativeAudioCapture();
             startCamera();
-            events.onPublishStatus("Camera publish starting");
+            events.onPublishStatus("Camera/audio publish starting");
         } catch (Exception e) {
             events.onPublishError("Camera publish start failed: " + e.getMessage());
             stop();
@@ -122,6 +143,11 @@ public final class AndroidCameraRtmpPublisher {
         stopEncoder();
         nativeBridge.stopPublish();
         publisherStarted = false;
+        synchronized (publishConfigLock) {
+            videoCsd0 = null;
+            videoCsd1 = null;
+            audioCsd0 = null;
+        }
         previewSurface = null;
         events.onPublishStatus("Camera publish stopped");
     }
@@ -451,25 +477,11 @@ public final class AndroidCameraRtmpPublisher {
                         + " stride=" + outputStride
                         + " sliceHeight=" + outputSliceHeight
                         + " publishHeader=" + activeWidth + "x" + activeHeight);
-                byte[] csd0 = byteBufferToArray(output.getByteBuffer("csd-0"));
-                byte[] csd1 = byteBufferToArray(output.getByteBuffer("csd-1"));
-                int result = nativeBridge.startVideoPublish(
-                        publishUrl,
-                        activeWidth,
-                        activeHeight,
-                        FRAME_RATE,
-                        activeBitrateBps,
-                        csd0,
-                        csd1);
-                if (result != 0) {
-                    events.onPublishError("Native publisher start failed: "
-                            + result + " " + nativeBridge.publishStatus());
-                    running = false;
-                    return;
+                synchronized (publishConfigLock) {
+                    videoCsd0 = byteBufferToArray(output.getByteBuffer("csd-0"));
+                    videoCsd1 = byteBufferToArray(output.getByteBuffer("csd-1"));
                 }
-                publisherStarted = true;
-                events.onPublishStatus("RTMP publisher started "
-                        + activeWidth + "x" + activeHeight);
+                tryStartNativePublisher();
                 continue;
             }
             if (index < 0) {
@@ -487,11 +499,12 @@ public final class AndroidCameraRtmpPublisher {
                     byte[] packet = new byte[info.size];
                     outputBuffer.get(packet);
                     boolean keyFrame = (info.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
-                    recordEncoderOutput(info.size, info.presentationTimeUs, keyFrame);
+                    long mappedPtsUs = mapVideoPtsToMonotonicUs(info.presentationTimeUs);
+                    recordEncoderOutput(info.size, mappedPtsUs, keyFrame);
                     int writeResult = nativeBridge.writeVideoPacket(
                             packet,
-                            info.presentationTimeUs,
-                            info.presentationTimeUs,
+                            mappedPtsUs,
+                            mappedPtsUs,
                             frameDurationUs,
                             keyFrame);
                     if (writeResult != 0) {
@@ -511,6 +524,73 @@ public final class AndroidCameraRtmpPublisher {
         }
     }
 
+    private void startNativeAudioCapture() throws Exception {
+        int result = nativeBridge.startPublishAudioCapture();
+        if (result != 0) {
+            throw new IllegalStateException("Native audio capture start failed: " + result
+                    + " " + nativeBridge.publishStatus());
+        }
+        android.util.Log.i(TAG, "native audio capture requested sampleRate="
+                + AUDIO_SAMPLE_RATE + " channels=" + AUDIO_CHANNELS
+                + " bitrate=" + AUDIO_BITRATE_BPS);
+    }
+
+    private void tryStartNativePublisher() {
+        synchronized (publishConfigLock) {
+            if (!running || publisherStarted) {
+                return;
+            }
+            if (audioCsd0 == null) {
+                audioCsd0 = nativeBridge.publishAudioCodecConfig();
+                if (audioCsd0 != null) {
+                    android.util.Log.i(TAG, "native audio config ready csd=" + audioCsd0.length);
+                }
+            }
+            if (videoCsd0 == null || videoCsd1 == null || audioCsd0 == null) {
+                events.onPublishStatus("Waiting AV config video="
+                        + (videoCsd0 != null && videoCsd1 != null)
+                        + " audio=" + (audioCsd0 != null));
+                if (audioCsd0 == null) {
+                    scheduleTryStartNativePublisher();
+                }
+                return;
+            }
+            int result = nativeBridge.startAvPublish(
+                    publishUrl,
+                    activeWidth,
+                    activeHeight,
+                    FRAME_RATE,
+                    activeBitrateBps,
+                    videoCsd0,
+                    videoCsd1,
+                    AUDIO_SAMPLE_RATE,
+                    AUDIO_CHANNELS,
+                    AUDIO_BITRATE_BPS,
+                    audioCsd0);
+            if (result != 0) {
+                events.onPublishError("Native AV publisher start failed: "
+                        + result + " " + nativeBridge.publishStatus());
+                running = false;
+                return;
+            }
+            publisherStarted = true;
+            events.onPublishStatus("RTMP AV publisher started "
+                    + activeWidth + "x" + activeHeight
+                    + " audio=" + AUDIO_SAMPLE_RATE + "Hz native");
+        }
+    }
+
+    private void scheduleTryStartNativePublisher() {
+        if (audioConfigRetryScheduled) {
+            return;
+        }
+        audioConfigRetryScheduled = true;
+        new Handler(context.getMainLooper()).postDelayed(() -> {
+            audioConfigRetryScheduled = false;
+            tryStartNativePublisher();
+        }, 100);
+    }
+
     private void resetFlowStats() {
         long nowMs = System.currentTimeMillis();
         encoderStatsStartMs = nowMs;
@@ -520,6 +600,23 @@ public final class AndroidCameraRtmpPublisher {
         encoderDequeueTimeouts = 0;
         encoderLastPtsUs = Long.MIN_VALUE;
         encoderPtsGapMaxUs = 0;
+        firstVideoCodecPtsUs = Long.MIN_VALUE;
+        firstVideoMonoPtsUs = Long.MIN_VALUE;
+    }
+
+    private long mapVideoPtsToMonotonicUs(long codecPtsUs) {
+        if (firstVideoCodecPtsUs == Long.MIN_VALUE) {
+            firstVideoCodecPtsUs = codecPtsUs;
+            firstVideoMonoPtsUs = System.nanoTime() / 1_000L;
+            android.util.Log.i(TAG, "video pts clock mapped codecFirstUs="
+                    + firstVideoCodecPtsUs
+                    + " monoFirstUs=" + firstVideoMonoPtsUs);
+        }
+        long deltaUs = codecPtsUs - firstVideoCodecPtsUs;
+        if (deltaUs < 0) {
+            deltaUs = 0;
+        }
+        return firstVideoMonoPtsUs + deltaUs;
     }
 
     private void recordEncoderOutput(int size, long ptsUs, boolean keyFrame) {

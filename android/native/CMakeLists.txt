@@ -4,6 +4,7 @@ project(streambridge_android LANGUAGES CXX)
 
 add_library(streambridge_android SHARED
     jni/streambridge_jni.cpp
+    publish/native_audio_aac_encoder.cpp
     publish/native_rtmp_publish_session.cpp
     playback/audio_decode_worker.cpp
     playback/demux_worker.cpp
@@ -20,6 +21,7 @@ add_library(streambridge_android SHARED
     playback/playback_reconnect_controller.cpp
     playback/video_path_config.cpp
     playback/video_decode_worker.cpp
+    ../../common/src/core/av_sync.cpp
     ../../common/src/ffmpeg/ffmpeg_rtmp_publisher.cpp
 )
 

@@ -253,7 +253,8 @@ Result<void> FFmpegRTMPPublisher::write_header(const StreamInfo& video_stream,
                                      "raw FLV fallback missing H.264 SPS/PPS");
         }
 
-        const uint8_t header[] = {'F', 'L', 'V', 1, 1, 0, 0, 0, 9, 0, 0, 0, 0};
+        const uint8_t flags = audio_stream.is_audio() ? 5 : 1;
+        const uint8_t header[] = {'F', 'L', 'V', 1, flags, 0, 0, 0, 9, 0, 0, 0, 0};
         avio_write(raw_pb_, header, static_cast<int>(sizeof(header)));
 
         std::vector<uint8_t> payload;
@@ -265,9 +266,25 @@ Result<void> FFmpegRTMPPublisher::write_header(const StreamInfo& video_stream,
         payload.push_back(0);
         payload.insert(payload.end(), avcc.begin(), avcc.end());
         write_flv_tag(raw_pb_, 9, 0, payload);
+
+        if (audio_stream.is_audio()) {
+            if (audio_stream.codec_extradata.empty()) {
+                return Result<void>::err(ErrorDomain::Codec, ErrorCode::InvalidCodecConfig,
+                                         "raw FLV fallback missing AAC AudioSpecificConfig");
+            }
+            std::vector<uint8_t> audio_payload;
+            audio_payload.reserve(2 + audio_stream.codec_extradata.size());
+            audio_payload.push_back(0xAF);  // AAC, 44kHz tag hint, 16-bit, stereo-compatible
+            audio_payload.push_back(0);     // AAC sequence header
+            audio_payload.insert(audio_payload.end(),
+                                 audio_stream.codec_extradata.begin(),
+                                 audio_stream.codec_extradata.end());
+            write_flv_tag(raw_pb_, 8, 0, audio_payload);
+        }
         avio_flush(raw_pb_);
 
         raw_video_stream_ = video_stream;
+        raw_audio_stream_ = audio_stream;
         header_written_ = true;
         return Result<void>::ok();
     }
@@ -306,6 +323,31 @@ Result<void> FFmpegRTMPPublisher::write_packet(const MediaPacket& packet) {
     }
 
     if (raw_flv_mode_) {
+        if (packet.is_audio()) {
+            if (packet.data.empty()) {
+                return Result<void>::ok();
+            }
+            const int64_t pts_us = packet.pts.us >= 0 ? packet.pts.us : 0;
+            const uint32_t timestamp_ms =
+                pts_us > 0 ? static_cast<uint32_t>(pts_us / 1000) : 0;
+            std::vector<uint8_t> payload;
+            payload.reserve(2 + packet.data.size());
+            payload.push_back(0xAF);
+            payload.push_back(1);  // AAC raw frame
+            payload.insert(payload.end(), packet.data.begin(), packet.data.end());
+            write_flv_tag(raw_pb_, 8, timestamp_ms, payload);
+            avio_flush(raw_pb_);
+
+            if (raw_pb_->error < 0) {
+                char err[AV_ERROR_MAX_STRING_SIZE] = {0};
+                av_strerror(raw_pb_->error, err, sizeof(err));
+                return Result<void>::err(ErrorDomain::Network, ErrorCode::NetworkWriteFailed,
+                                         std::string("raw FLV audio write: ") + err);
+            }
+            bytes_written_ += static_cast<int64_t>(payload.size() + 15);
+            packets_written_++;
+            return Result<void>::ok();
+        }
         if (!packet.is_video()) {
             return Result<void>::ok();
         }

@@ -56,6 +56,21 @@ void append_csd(std::vector<uint8_t>& out, const std::vector<uint8_t>& csd) {
     out.insert(out.end(), csd.begin(), csd.end());
 }
 
+jbyteArray to_jbyte_array(JNIEnv* env, const std::vector<uint8_t>& data) {
+    if (data.empty()) {
+        return nullptr;
+    }
+    jbyteArray result = env->NewByteArray(static_cast<jsize>(data.size()));
+    if (result == nullptr) {
+        return nullptr;
+    }
+    env->SetByteArrayRegion(result,
+                            0,
+                            static_cast<jsize>(data.size()),
+                            reinterpret_cast<const jbyte*>(data.data()));
+    return result;
+}
+
 }  // namespace
 
 extern "C" JNIEXPORT jlong JNICALL
@@ -169,6 +184,67 @@ Java_com_streambridge_android_core_NativeBridge_nativePublisherStartVideoOnly(
 }
 
 extern "C" JNIEXPORT jint JNICALL
+Java_com_streambridge_android_core_NativeBridge_nativePublisherStartAv(
+        JNIEnv* env,
+        jclass,
+        jlong handle,
+        jstring url,
+        jint width,
+        jint height,
+        jint frame_rate,
+        jint video_bitrate_bps,
+        jbyteArray video_csd0,
+        jbyteArray video_csd1,
+        jint sample_rate,
+        jint channels,
+        jint audio_bitrate_bps,
+        jbyteArray audio_csd0) {
+    NativeRtmpPublishSession* session = publisher_from_handle(handle);
+    if (session == nullptr) {
+        return -1;
+    }
+    std::vector<uint8_t> video_codec_config;
+    append_csd(video_codec_config, to_vector(env, video_csd0));
+    append_csd(video_codec_config, to_vector(env, video_csd1));
+    std::vector<uint8_t> audio_codec_config = to_vector(env, audio_csd0);
+    return session->start_av(
+        to_string(env, url),
+        width,
+        height,
+        frame_rate,
+        video_bitrate_bps,
+        video_codec_config,
+        sample_rate,
+        channels,
+        audio_bitrate_bps,
+        audio_codec_config);
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_streambridge_android_core_NativeBridge_nativePublisherStartAudioCapture(
+        JNIEnv*,
+        jclass,
+        jlong handle) {
+    NativeRtmpPublishSession* session = publisher_from_handle(handle);
+    if (session == nullptr) {
+        return -1;
+    }
+    return session->start_audio_capture();
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_streambridge_android_core_NativeBridge_nativePublisherAudioCodecConfig(
+        JNIEnv* env,
+        jclass,
+        jlong handle) {
+    NativeRtmpPublishSession* session = publisher_from_handle(handle);
+    if (session == nullptr) {
+        return nullptr;
+    }
+    return to_jbyte_array(env, session->audio_codec_config());
+}
+
+extern "C" JNIEXPORT jint JNICALL
 Java_com_streambridge_android_core_NativeBridge_nativePublisherWriteVideoPacket(
         JNIEnv* env,
         jclass,
@@ -190,6 +266,26 @@ Java_com_streambridge_android_core_NativeBridge_nativePublisherWriteVideoPacket(
         dts_us,
         duration_us,
         key_frame == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_streambridge_android_core_NativeBridge_nativePublisherWriteAudioPacket(
+        JNIEnv* env,
+        jclass,
+        jlong handle,
+        jbyteArray data,
+        jlong pts_us,
+        jlong duration_us) {
+    NativeRtmpPublishSession* session = publisher_from_handle(handle);
+    if (session == nullptr) {
+        return -1;
+    }
+    std::vector<uint8_t> packet = to_vector(env, data);
+    return session->write_audio_packet(
+        packet.data(),
+        packet.size(),
+        pts_us,
+        duration_us);
 }
 
 extern "C" JNIEXPORT void JNICALL

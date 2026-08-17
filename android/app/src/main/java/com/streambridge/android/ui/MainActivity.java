@@ -33,7 +33,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private static final String DEFAULT_PLAY_URL = "rtmp://192.168.31.57:1935/live/test";
     private static final String DEFAULT_PUBLISH_URL =
             "rtmp://192.168.31.57:1935/live/android_camera";
-    private static final int REQUEST_CAMERA_PERMISSION = 2001;
+    private static final int REQUEST_PUBLISH_PERMISSIONS = 2001;
 
     private static final String[] STREAM_SOURCE_LABELS = {
             "Custom URL",
@@ -343,13 +343,17 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                                            String[] permissions,
                                            int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode != REQUEST_CAMERA_PERMISSION) {
+        if (requestCode != REQUEST_PUBLISH_PERMISSIONS) {
             return;
         }
-        if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+        boolean allGranted = grantResults.length > 0;
+        for (int result : grantResults) {
+            allGranted = allGranted && result == PackageManager.PERMISSION_GRANTED;
+        }
+        if (allGranted) {
             toggleCameraPublish();
         } else {
-            onError("Camera permission denied");
+            onError("Camera/audio permission denied");
         }
     }
 
@@ -423,9 +427,14 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             return;
         }
 
-        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[] { Manifest.permission.CAMERA },
-                    REQUEST_CAMERA_PERMISSION);
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED
+                || checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[] {
+                            Manifest.permission.CAMERA,
+                            Manifest.permission.RECORD_AUDIO
+                    },
+                    REQUEST_PUBLISH_PERMISSIONS);
             return;
         }
 

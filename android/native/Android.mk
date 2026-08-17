@@ -37,6 +37,7 @@ LOCAL_MODULE := streambridge_android
 LOCAL_SRC_FILES := \
     jni/streambridge_jni.cpp \
     platform/android_logging.cpp \
+    publish/native_audio_aac_encoder.cpp \
     publish/native_rtmp_publish_session.cpp \
     playback/audio_decode_worker.cpp \
     playback/demux_worker.cpp \

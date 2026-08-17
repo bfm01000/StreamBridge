@@ -41,6 +41,7 @@ private:
     AVStream* video_stream_ = nullptr;
     AVStream* audio_stream_ = nullptr;
     StreamInfo raw_video_stream_;
+    StreamInfo raw_audio_stream_;
     TimePointUs stream_start_us_{0};
     bool header_written_ = false;
     bool raw_flv_mode_ = false;

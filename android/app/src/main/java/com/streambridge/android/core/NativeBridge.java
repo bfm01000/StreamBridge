@@ -68,6 +68,39 @@ public final class NativeBridge {
                 publisherHandle, url, width, height, frameRate, bitrateBps, csd0, csd1);
     }
 
+    public int startAvPublish(String url,
+                              int width,
+                              int height,
+                              int frameRate,
+                              int videoBitrateBps,
+                              byte[] videoCsd0,
+                              byte[] videoCsd1,
+                              int sampleRate,
+                              int channels,
+                              int audioBitrateBps,
+                              byte[] audioCsd0) {
+        if (publisherHandle == 0) {
+            return -1;
+        }
+        return nativePublisherStartAv(
+                publisherHandle, url, width, height, frameRate, videoBitrateBps,
+                videoCsd0, videoCsd1, sampleRate, channels, audioBitrateBps, audioCsd0);
+    }
+
+    public int startPublishAudioCapture() {
+        if (publisherHandle == 0) {
+            return -1;
+        }
+        return nativePublisherStartAudioCapture(publisherHandle);
+    }
+
+    public byte[] publishAudioCodecConfig() {
+        if (publisherHandle == 0) {
+            return null;
+        }
+        return nativePublisherAudioCodecConfig(publisherHandle);
+    }
+
     public int writeVideoPacket(byte[] data, long ptsUs, long dtsUs,
                                 long durationUs, boolean keyFrame) {
         if (publisherHandle == 0) {
@@ -75,6 +108,13 @@ public final class NativeBridge {
         }
         return nativePublisherWriteVideoPacket(
                 publisherHandle, data, ptsUs, dtsUs, durationUs, keyFrame);
+    }
+
+    public int writeAudioPacket(byte[] data, long ptsUs, long durationUs) {
+        if (publisherHandle == 0) {
+            return -1;
+        }
+        return nativePublisherWriteAudioPacket(publisherHandle, data, ptsUs, durationUs);
     }
 
     public void stopPublish() {
@@ -120,8 +160,20 @@ public final class NativeBridge {
     private static native int nativePublisherStartVideoOnly(long handle, String url,
             int width, int height, int frameRate, int bitrateBps, byte[] csd0, byte[] csd1);
 
+    private static native int nativePublisherStartAv(long handle, String url,
+            int width, int height, int frameRate, int videoBitrateBps,
+            byte[] videoCsd0, byte[] videoCsd1,
+            int sampleRate, int channels, int audioBitrateBps, byte[] audioCsd0);
+
+    private static native int nativePublisherStartAudioCapture(long handle);
+
+    private static native byte[] nativePublisherAudioCodecConfig(long handle);
+
     private static native int nativePublisherWriteVideoPacket(long handle, byte[] data,
             long ptsUs, long dtsUs, long durationUs, boolean keyFrame);
+
+    private static native int nativePublisherWriteAudioPacket(long handle, byte[] data,
+            long ptsUs, long durationUs);
 
     private static native void nativePublisherStop(long handle);
 

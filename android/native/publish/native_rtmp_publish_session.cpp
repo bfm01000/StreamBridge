@@ -29,6 +29,45 @@ NativeRtmpPublishSession::~NativeRtmpPublishSession() {
     stop();
 }
 
+int NativeRtmpPublishSession::start_audio_capture() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (audio_encoder_ != nullptr) {
+        return 0;
+    }
+    NativeAudioAacEncoder::Config config;
+    audio_encoder_ = std::make_unique<NativeAudioAacEncoder>(
+        config,
+        [this](std::vector<uint8_t> codec_config) {
+            on_native_audio_config(std::move(codec_config));
+        },
+        [this](NativeAudioAacEncoder::EncodedPacket packet) {
+            on_native_audio_packet(std::move(packet));
+        },
+        [this](std::string message) {
+            on_native_audio_error(message);
+        });
+    return audio_encoder_->start();
+}
+
+void NativeRtmpPublishSession::stop_audio_capture() {
+    std::unique_ptr<NativeAudioAacEncoder> encoder;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        encoder = std::move(audio_encoder_);
+    }
+    if (encoder != nullptr) {
+        encoder->stop();
+    }
+}
+
+std::vector<uint8_t> NativeRtmpPublishSession::audio_codec_config() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (audio_encoder_ == nullptr) {
+        return {};
+    }
+    return audio_encoder_->codec_config();
+}
+
 int NativeRtmpPublishSession::start_video_only(
         const std::string& url,
         int width,
@@ -36,6 +75,21 @@ int NativeRtmpPublishSession::start_video_only(
         int frame_rate,
         int bitrate_bps,
         const std::vector<uint8_t>& codec_config) {
+    return start_av(url, width, height, frame_rate, bitrate_bps, codec_config,
+                    0, 0, 0, {});
+}
+
+int NativeRtmpPublishSession::start_av(
+        const std::string& url,
+        int width,
+        int height,
+        int frame_rate,
+        int video_bitrate_bps,
+        const std::vector<uint8_t>& video_codec_config,
+        int sample_rate,
+        int channels,
+        int audio_bitrate_bps,
+        const std::vector<uint8_t>& audio_codec_config) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (running_) {
@@ -43,9 +97,10 @@ int NativeRtmpPublishSession::start_video_only(
             return -1;
         }
     }
-    if (url.empty() || width <= 0 || height <= 0 || codec_config.empty()) {
+    const bool has_audio = sample_rate > 0 && channels > 0 && !audio_codec_config.empty();
+    if (url.empty() || width <= 0 || height <= 0 || video_codec_config.empty()) {
         std::lock_guard<std::mutex> lock(mutex_);
-        status_ = "PublishError invalid video publish config";
+        status_ = "PublishError invalid AV publish config";
         return -2;
     }
 
@@ -66,12 +121,23 @@ int NativeRtmpPublishSession::start_video_only(
     video.height = height;
     video.frame_rate = static_cast<double>(frame_rate);
     video.pixel_format = PixelFormat::Unknown;
-    video.codec_extradata = codec_config;
+    video.codec_extradata = video_codec_config;
     video.time_base = Rational::micros();
-    video.bitrate_bps = bitrate_bps;
+    video.bitrate_bps = video_bitrate_bps;
 
-    StreamInfo no_audio;
-    auto header_result = publisher_.write_header(video, no_audio);
+    StreamInfo audio;
+    if (has_audio) {
+        audio.type = MediaType::Audio;
+        audio.codec = CodecId::AAC;
+        audio.sample_rate = sample_rate;
+        audio.channels = channels;
+        audio.sample_format = SampleFormat::S16;
+        audio.codec_extradata = audio_codec_config;
+        audio.time_base = Rational::micros();
+        audio.bitrate_bps = audio_bitrate_bps;
+    }
+
+    auto header_result = publisher_.write_header(video, audio);
     if (!header_result.is_ok()) {
         std::lock_guard<std::mutex> lock(mutex_);
         status_ = "PublishError header: " + header_result.error_message();
@@ -87,12 +153,15 @@ int NativeRtmpPublishSession::start_video_only(
         queued_count_ = 0;
         written_count_ = 0;
         key_count_ = 0;
-        first_pts_us_ = -1;
+        dropped_before_align_ = 0;
+        timestamp_aligner_.reset();
         status_ = "Publishing queued=0 written=0";
     }
     writer_thread_ = std::thread(&NativeRtmpPublishSession::writer_loop, this);
-    SB_LOG_I(kTag, "started Android camera RTMP publish url=%s %dx%d fps=%d bitrate=%d",
-             url.c_str(), width, height, frame_rate, bitrate_bps);
+    SB_LOG_I(kTag,
+             "started Android camera RTMP publish url=%s video=%dx%d fps=%d bitrate=%d audio=%d %dHz %dch abitrate=%d",
+             url.c_str(), width, height, frame_rate, video_bitrate_bps,
+             has_audio ? 1 : 0, sample_rate, channels, audio_bitrate_bps);
     return 0;
 }
 
@@ -113,14 +182,23 @@ int NativeRtmpPublishSession::write_video_packet(
         if (!running_) {
             return -1;
         }
-        if (first_pts_us_ < 0) {
-            first_pts_us_ = pts_us;
+        auto decision = timestamp_aligner_.on_packet(MediaType::Video, TimePointUs{pts_us});
+        if (decision.just_aligned) {
+            SB_LOG_I(kTag, "publish timestamp aligned base=%lld avDiff=%lld",
+                     static_cast<long long>(decision.base_pts.us),
+                     static_cast<long long>(decision.av_diff_us));
+        }
+        if (decision.action != PublishTimestampAligner::Action::Pass) {
+            dropped_before_align_++;
+            return 0;
         }
 
         packet.type = MediaType::Video;
         packet.codec = CodecId::H264;
-        packet.pts.us = pts_us - first_pts_us_;
-        packet.dts.us = dts_us >= 0 ? dts_us - first_pts_us_ : packet.pts.us;
+        packet.pts = decision.normalized_pts;
+        packet.dts.us = dts_us >= 0
+            ? std::max<int64_t>(0, dts_us - decision.base_pts.us)
+            : packet.pts.us;
         packet.duration.us = duration_us;
         packet.is_key_frame = key_frame;
         packet.sequence_number = queued_count_++;
@@ -144,7 +222,56 @@ int NativeRtmpPublishSession::write_video_packet(
     return 0;
 }
 
+int NativeRtmpPublishSession::write_audio_packet(
+        const uint8_t* data,
+        size_t size,
+        int64_t pts_us,
+        int64_t duration_us) {
+    if (data == nullptr || size == 0) {
+        return 0;
+    }
+
+    MediaPacket packet;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!running_) {
+            return -1;
+        }
+        auto decision = timestamp_aligner_.on_packet(MediaType::Audio, TimePointUs{pts_us});
+        if (decision.just_aligned) {
+            SB_LOG_I(kTag, "publish timestamp aligned base=%lld avDiff=%lld",
+                     static_cast<long long>(decision.base_pts.us),
+                     static_cast<long long>(decision.av_diff_us));
+        }
+        if (decision.action != PublishTimestampAligner::Action::Pass) {
+            dropped_before_align_++;
+            return 0;
+        }
+
+        packet.type = MediaType::Audio;
+        packet.codec = CodecId::AAC;
+        packet.pts = decision.normalized_pts;
+        packet.dts.us = packet.pts.us;
+        packet.duration.us = duration_us;
+        packet.is_key_frame = true;
+        packet.sequence_number = queued_count_++;
+    }
+
+    packet.data.assign(data, data + size);
+    QueueResult result = packet_queue_.push(std::move(packet));
+    if (result == QueueResult::Aborted) {
+        return -1;
+    }
+    if (result != QueueResult::Ok) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        status_ = std::string("PublishError audio queue push: ") + queue_result_name(result);
+        return -2;
+    }
+    return 0;
+}
+
 void NativeRtmpPublishSession::stop() {
+    stop_audio_capture();
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (running_) {
@@ -234,6 +361,8 @@ void NativeRtmpPublishSession::writer_loop() {
                     << " written=" << written_count_
                     << " q=" << packet_queue_.size()
                     << " drop=" << queue_stats.total_dropped
+                    << " alignDrop=" << dropped_before_align_
+                    << " avDiffUs=" << timestamp_aligner_.av_diff_us()
                     << " bytes=" << publisher_stats.bytes_written
                     << " bitrateKbps=" << bitrate_kbps
                     << " writeAvgUs=" << avg_write_us
@@ -249,6 +378,35 @@ void NativeRtmpPublishSession::writer_loop() {
             write_max_us = 0;
             timeouts = 0;
         }
+    }
+}
+
+void NativeRtmpPublishSession::on_native_audio_config(std::vector<uint8_t> config) {
+    SB_LOG_I(kTag, "native audio config ready bytes=%zu", config.size());
+}
+
+void NativeRtmpPublishSession::on_native_audio_packet(
+        NativeAudioAacEncoder::EncodedPacket packet) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!running_) {
+            return;
+        }
+    }
+    int result = write_audio_packet(
+        packet.data.data(),
+        packet.data.size(),
+        packet.pts_us,
+        packet.duration_us);
+    if (result != 0) {
+        SB_LOG_W(kTag, "native audio packet dropped result=%d", result);
+    }
+}
+
+void NativeRtmpPublishSession::on_native_audio_error(const std::string& message) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (status_.find("PublishError") != 0) {
+        status_ = "PublishAudioError " + message;
     }
 }
 
