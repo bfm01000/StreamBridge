@@ -815,3 +815,64 @@ shared/interface-contract
 - [ ] 是否更新了 Decision Log？
 - [ ] 是否记录了构建或测试结果？
 - [ ] 是否写明了阻塞项和下一步？
+
+### 2026-08-18 Codex RTP/UDP Video Transport Pass
+
+- Completed:
+  - Updated `AGENTS.md` and `CLAUDE.md` to single-agent collaboration rules; both files remain identical.
+  - Added transport selection model: default `TransportKind::RtmpFlv`, optional `TransportKind::RtpUdpVideo`.
+  - Preserved RTMP publisher path and added Linux factory selection for RTMP vs RTP/UDP video.
+  - Added H.264 packet format metadata on `MediaPacket`: `AnnexB`, `AvccLengthPrefixed`, `Unknown`.
+  - Added platform-independent H.264 NALU parser for Annex-B and AVCC length-prefixed packets.
+  - Added platform-independent RTP fixed header serialization/parsing and H.264 RTP packetizer/depacketizer.
+  - Added Linux UDP socket RAII wrapper with interruptible receive behavior.
+  - Added Linux RTP/UDP video publisher and receiver pipeline wrappers.
+  - Added Linux CLI RTP options: `--transport rtp`, `--rtp-remote-host`, `--rtp-remote-port`, `--rtp-local-port`.
+- Decisions:
+  - RTMP remains the default transport and regression path.
+  - RTP/UDP video stage is video-only; selecting RTP with `--enable-audio` is rejected by config validation.
+  - Common interfaces do not expose UDP socket fd, RTP sequence number, SSRC, payload type handling, or FU-A details to camera/encoder/decoder/renderer modules.
+  - RTP receiver outputs Annex-B `MediaPacket` access units; decoder integration can consume a stable format later.
+- Validation:
+  - Linux WSL build passed for `streambridge_publisher` and RTP/UDP related tests.
+  - Passing tests include `rtp_packet`, `h264_nalu_parser`, `h264_rtp_packetizer`, `h264_rtp_depacketizer`, `udp_socket`, `rtp_udp_video_publisher`, `rtp_udp_video_receiver`.
+  - Android build passed after common H.264 format detection integration: `JAVA_HOME=D:\soft\AS\jbr .\gradlew.bat :android:app:assembleDebug`.
+- Remaining risks:
+  - RTP/UDP receiver is currently a pipeline wrapper and test target; it is not yet wired into the full SDL/decoder Linux player UI.
+  - Android RTP/UDP transport socket and receiver/player integration are not implemented in this pass.
+  - No RTCP/NACK/PLI/FEC/SRTP/ICE/congestion control/audio RTP by design for this stage.
+
+### 2026-08-18 Codex Android RTP Sender Extension
+
+- Completed:
+  - Added Android native UDP sender RAII wrapper for RTP video publishing.
+  - Added Android native RTP/UDP H.264 video publisher using the common H.264 RTP packetizer.
+  - Refactored Android native publish session to own `IMediaPublisher`, keeping RTMP and adding RTP video-only start path.
+  - Exposed `NativeBridge.startRtpVideoPublish(...)` and matching JNI method without changing existing RTMP Java calls.
+  - Added RTP header/extradata handling so SPS/PPS can be sent before media packets when codec config is available.
+- Validation:
+  - Android `:android:app:assembleDebug` passed with NDK arm64-v8a native build.
+  - Linux full `ctest` remained 11/11 passed after shared RTP publisher behavior update.
+- Remaining risks:
+  - Android UI has a callable bridge for RTP publish, but no polished UI control is wired in this pass.
+  - Android RTP receiver/playback path is still pending; current Android RTP work is sender-side only.
+
+### 2026-08-18 Codex Android RTP Playback/UI Extension
+
+- Completed:
+  - Wired Android publish UI transport selection so upper layer can choose RTMP/FLV or RTP/UDP video; RTMP remains the default.
+  - Added Android RTP playback URL selection via `rtp://0.0.0.0:<port>` while preserving existing RTMP URL playback and system player fallback.
+  - Added Android UDP receiver RAII wrapper and Android RTP/UDP H.264 video receiver wrapper.
+  - Extended `NativePlaybackSession` with video-only RTP receive mode: UDP/RTP/H.264 runs on the input thread and feeds Annex-B `MediaPacket` into the existing video decode queue.
+  - Added Java/JNI `NativeBridge.startRtpVideoReceive(...)` and native `NativePlaybackSession::start_rtp_video(...)` without exposing RTP packet details to decoder/renderer/UI.
+- Ownership/threading:
+  - RTP receiver socket ownership stays inside `AndroidRtpUdpVideoReceiver`; session owns it by `unique_ptr` and interrupts it on stop/error.
+  - RTP playback starts receive thread + video decode thread only; audio thread is not started for the current video-only RTP stage.
+  - Stop order remains request stop -> abort queues -> interrupt/close socket -> join threads -> close decoders/resources.
+- Validation:
+  - Android `:android:app:assembleDebug` passed with Java, JNI, and ndk-build arm64-v8a native compilation.
+  - Linux/common RTP build and `ctest` passed: 11/11 tests green.
+- Remaining risks:
+  - Android RTP playback currently uses default expected geometry 1280x720@30 because the current decoder open path needs `StreamInfo` before packet consumption; SPS dimension parsing can replace this later.
+  - Android RTP playback has compile validation only in this pass; device-level Android <-> Linux RTP video demo still needs runtime verification on the actual network.
+  - RTP stage remains video-only and intentionally excludes RTCP, NACK/PLI/FEC, SRTP/ICE, congestion control, and audio RTP.

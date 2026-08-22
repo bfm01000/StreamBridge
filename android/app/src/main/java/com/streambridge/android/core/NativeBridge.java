@@ -4,8 +4,8 @@ import android.view.Surface;
 
 public final class NativeBridge {
     static {
-        // 按依赖顺序加载：avutil 无依赖，swresample/swscale 依赖 avutil，
-        // avcodec 依赖 avutil+swresample，avformat 依赖 avcodec+avutil
+        // ????????????avutil ??????swresample/swscale ??? avutil??
+        // avcodec ??? avutil+swresample??vformat ??? avcodec+avutil
         System.loadLibrary("avutil");
         System.loadLibrary("swresample");
         System.loadLibrary("swscale");
@@ -32,6 +32,17 @@ public final class NativeBridge {
             return -1;
         }
         return nativeStart(nativeHandle, url, surface, decodePath);
+    }
+
+
+    public int startRtpVideoReceive(int localPort, Surface surface,
+                                    int width, int height, double frameRate,
+                                    int decodePath) {
+        if (nativeHandle == 0) {
+            return -1;
+        }
+        return nativeStartRtpVideo(
+                nativeHandle, localPort, surface, width, height, frameRate, decodePath);
     }
 
     public void stop() {
@@ -66,6 +77,17 @@ public final class NativeBridge {
         }
         return nativePublisherStartVideoOnly(
                 publisherHandle, url, width, height, frameRate, bitrateBps, csd0, csd1);
+    }
+
+    public int startRtpVideoPublish(String remoteHost, int remotePort, int localPort,
+                                    int width, int height, int frameRate, int bitrateBps,
+                                    byte[] csd0, byte[] csd1) {
+        if (publisherHandle == 0) {
+            return -1;
+        }
+        return nativePublisherStartRtpVideoOnly(
+                publisherHandle, remoteHost, remotePort, localPort,
+                width, height, frameRate, bitrateBps, csd0, csd1);
     }
 
     public int startAvPublish(String url,
@@ -145,6 +167,10 @@ public final class NativeBridge {
 
     private static native int nativeStart(long handle, String url, Surface surface, int decodePath);
 
+
+    private static native int nativeStartRtpVideo(long handle, int localPort, Surface surface,
+            int width, int height, double frameRate, int decodePath);
+
     private static native void nativeStop(long handle);
 
     private static native void nativeSurfaceChanged(long handle, Surface surface);
@@ -158,6 +184,10 @@ public final class NativeBridge {
     private static native long nativePublisherCreate();
 
     private static native int nativePublisherStartVideoOnly(long handle, String url,
+            int width, int height, int frameRate, int bitrateBps, byte[] csd0, byte[] csd1);
+
+    private static native int nativePublisherStartRtpVideoOnly(long handle,
+            String remoteHost, int remotePort, int localPort,
             int width, int height, int frameRate, int bitrateBps, byte[] csd0, byte[] csd1);
 
     private static native int nativePublisherStartAv(long handle, String url,

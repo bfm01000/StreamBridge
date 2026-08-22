@@ -1,8 +1,8 @@
 LOCAL_PATH := $(call my-dir)
 
 # ========== FFmpeg prebuilt shared libraries ==========
-# 每个 .so 已设置 DT_SONAME（如 libavcodec.so），链接器将使用 SONAME
-# 而非 Windows 路径写入 DT_NEEDED。
+# ??? .so ?????DT_SONAME??? libavcodec.so???????????? SONAME
+# ??? Windows ?????? DT_NEEDED??
 
 include $(CLEAR_VARS)
 LOCAL_MODULE := avutil
@@ -38,8 +38,12 @@ LOCAL_SRC_FILES := \
     jni/streambridge_jni.cpp \
     platform/android_logging.cpp \
     publish/native_audio_aac_encoder.cpp \
+    publish/android_udp_sender.cpp \
+    publish/android_rtp_udp_video_publisher.cpp \
     publish/native_rtmp_publish_session.cpp \
     playback/audio_decode_worker.cpp \
+    playback/android_udp_receiver.cpp \
+    playback/android_rtp_udp_video_receiver.cpp \
     playback/demux_worker.cpp \
     playback/hardware_buffer_frame.cpp \
     playback/mediacodec/mediacodec_csd.cpp \

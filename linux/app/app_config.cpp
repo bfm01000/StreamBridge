@@ -7,10 +7,10 @@ namespace streambridge {
 
 void print_usage(const char* prog) {
     fprintf(stderr,
-        "StreamBridge Publisher — Linux RTMP streaming tool\n"
+        "StreamBridge Publisher ??Linux streaming tool\n"
         "Usage: %s [options]\n"
         "\n"
-        "Required:\n"
+        "Required for RTMP transport:\n"
         "  --rtmp-url <url>          RTMP push URL (e.g. rtmp://127.0.0.1:1935/live/test)\n"
         "\n"
         "Video source (choose one):\n"
@@ -24,6 +24,10 @@ void print_usage(const char* prog) {
         "  --enable-audio                            Enable audio capture and encoding\n"
         "\n"
         "Options:\n"
+        "  --transport <rtmp|rtp>    Transport path (default: rtmp)\n"
+        "  --rtp-remote-host <ip>    RTP/UDP video remote IPv4 address\n"
+        "  --rtp-remote-port <port>  RTP/UDP video remote port\n"
+        "  --rtp-local-port <port>   Optional local UDP bind port for RTP video\n"
         "  --video-width <w>          Video width (default: 1280)\n"
         "  --video-height <h>         Video height (default: 720)\n"
         "  --video-fps <fps>          Video frame rate (default: 30)\n"
@@ -54,6 +58,10 @@ Result<AppConfig> AppConfig::parse(int argc, char* argv[]) {
 
     struct option long_opts[] = {
         {"rtmp-url",         required_argument, nullptr, 'u'},
+        {"transport",        required_argument, nullptr, 259},
+        {"rtp-remote-host",  required_argument, nullptr, 260},
+        {"rtp-remote-port",  required_argument, nullptr, 261},
+        {"rtp-local-port",   required_argument, nullptr, 262},
         {"video-source",     required_argument, nullptr, 'v'},
         {"video-width",      required_argument, nullptr, 'W'},
         {"video-height",     required_argument, nullptr, 'H'},
@@ -77,7 +85,7 @@ Result<AppConfig> AppConfig::parse(int argc, char* argv[]) {
     int opt;
     while ((opt = getopt_long(argc, argv, "u:v:W:H:F:B:aA:R:C:b:lnL:h", long_opts, nullptr)) != -1) {
         switch (opt) {
-            case 'u': cfg.rtmp_url = optarg; break;
+            case 'u': cfg.transport.rtmp_flv.url = optarg; break;
             case 'v': cfg.video_source = optarg; break;
             case 'W': cfg.video_width = std::atoi(optarg); break;
             case 'H': cfg.video_height = std::atoi(optarg); break;
@@ -92,6 +100,20 @@ Result<AppConfig> AppConfig::parse(int argc, char* argv[]) {
             case 257: cfg.video_backend = optarg; break;
             case 'l': cfg.loop = true; break;
             case 258: cfg.loop = false; break;  // --no-loop
+            case 259:
+                if (!std::strcmp(optarg, "rtmp")) {
+                    cfg.transport.kind = TransportKind::RtmpFlv;
+                } else if (!std::strcmp(optarg, "rtp")) {
+                    cfg.transport.kind = TransportKind::RtpUdpVideo;
+                } else {
+                    return Result<AppConfig>::err(
+                        ErrorDomain::Config, ErrorCode::InvalidConfig,
+                        "--transport must be rtmp or rtp");
+                }
+                break;
+            case 260: cfg.transport.rtp_udp_video.remote_host = optarg; break;
+            case 261: cfg.transport.rtp_udp_video.remote_port = static_cast<uint16_t>(std::atoi(optarg)); break;
+            case 262: cfg.transport.rtp_udp_video.local_port = static_cast<uint16_t>(std::atoi(optarg)); break;
             case 'n': cfg.no_throttle = true; break;
             case 'L': cfg.log_level_str = optarg; break;
             case 'h': print_usage(argv[0]); std::exit(0);
@@ -102,10 +124,23 @@ Result<AppConfig> AppConfig::parse(int argc, char* argv[]) {
         }
     }
 
-    if (cfg.rtmp_url.empty()) {
+    if (cfg.transport.is_rtmp() && cfg.transport.rtmp_flv.url.empty()) {
         return Result<AppConfig>::err(
             ErrorDomain::Config, ErrorCode::InvalidConfig,
-            "--rtmp-url is required");
+            "--rtmp-url is required for RTMP transport");
+    }
+    if (cfg.transport.is_rtp_udp_video()) {
+        if (cfg.transport.rtp_udp_video.remote_host.empty() ||
+            cfg.transport.rtp_udp_video.remote_port == 0) {
+            return Result<AppConfig>::err(
+                ErrorDomain::Config, ErrorCode::InvalidConfig,
+                "--rtp-remote-host and --rtp-remote-port are required for RTP transport");
+        }
+        if (cfg.enable_audio) {
+            return Result<AppConfig>::err(
+                ErrorDomain::Config, ErrorCode::InvalidConfig,
+                "RTP/UDP video transport does not support audio in this stage");
+        }
     }
     if (cfg.video_source.empty()) {
         return Result<AppConfig>::err(
@@ -149,7 +184,7 @@ PublishSessionConfig AppConfig::to_session_config() const {
         s.audio_encode.bitrate_bps = audio_bitrate;
     }
 
-    s.publish.url = rtmp_url;
+    s.transport = transport;
 
     return s;
 }

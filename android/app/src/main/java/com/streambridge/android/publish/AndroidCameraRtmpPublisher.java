@@ -24,6 +24,27 @@ import java.util.Arrays;
 import com.streambridge.android.core.BuildInfo;
 import com.streambridge.android.core.NativeBridge;
 
+/**
+ * Android ????????????????? *
+ * <p>????????Java/UI ??? native/common ??????????????Android ??? API ??????
+ *
+ * <pre>
+ * Camera2 -> CameraGlFrameRouter(OpenGL) -> Preview Surface
+ *                                      \-> MediaCodec H.264 encoder -> JNI video packet
+ *
+ * AAudio + AMediaCodec AAC encoder lives in native:
+ * NativeBridge.startPublishAudioCapture()
+ *   -> NativeRtmpPublishSession
+ *   -> NativeAudioAacEncoder
+ *
+ * Video packet + native audio packet
+ *   -> NativeRtmpPublishSession
+ *   -> common FFmpegRTMPPublisher
+ *   -> RTMP/FLV
+ * </pre>
+ *
+ * <p>????????? Java MediaCodec ??????????????????????????? Java/OpenGL
+ * ???????????encoder input Surface??????????????native ????????????????? * AMediaCodec?????Camera/Surface ???????????native?? */
 public final class AndroidCameraRtmpPublisher {
     public interface Events {
         void onPublishStatus(String message);
@@ -39,9 +60,18 @@ public final class AndroidCameraRtmpPublisher {
     private static final int FRAME_RATE = 30;
     private static final int BITRATE_BPS = 2_000_000;
     private static final int I_FRAME_INTERVAL_SEC = 2;
-    private static final int AUDIO_SAMPLE_RATE = 48_000;
+
+    // ????????AAC ????????? native??ava ?????????????????RTMP
+    // AV header ??? StreamInfo ??? native/common publisher?????Java ??native
+    // ?????????????????????
+        private static final int AUDIO_SAMPLE_RATE = 48_000;
     private static final int AUDIO_CHANNELS = 1;
     private static final int AUDIO_BITRATE_BPS = 96_000;
+
+    public enum PublishTransport {
+        RTMP,
+        RTP_UDP_VIDEO
+    }
 
     private final Context context;
     private final NativeBridge nativeBridge;
@@ -62,8 +92,15 @@ public final class AndroidCameraRtmpPublisher {
     private volatile boolean running;
     private volatile boolean publisherStarted;
     private volatile boolean audioConfigRetryScheduled;
-    private final Object publishConfigLock = new Object();
+
+    // RTMP/FLV header ???????????? SPS/PPS ??AAC AudioSpecificConfig??    // ??? config ??? Java MediaCodec ??????????????config ??? native
+    // AMediaCodec AAC encoder???????????????????????? config ??????????
+        private final Object publishConfigLock = new Object();
+    private PublishTransport publishTransport = PublishTransport.RTMP;
     private String publishUrl;
+    private String rtpRemoteHost;
+    private int rtpRemotePort;
+    private int rtpLocalPort;
     private byte[] videoCsd0;
     private byte[] videoCsd1;
     private byte[] audioCsd0;
@@ -74,7 +111,11 @@ public final class AndroidCameraRtmpPublisher {
     private long encoderDequeueTimeouts;
     private long encoderLastPtsUs = Long.MIN_VALUE;
     private long encoderPtsGapMaxUs;
-    private long firstVideoCodecPtsUs = Long.MIN_VALUE;
+
+    // Java ??? encoder ??presentationTimeUs ?????Surface/Camera ??????
+    // native ?????? AAudioStream_getTimestamp(CLOCK_MONOTONIC)???????????    // ???????????????????????????? PTS ?????System.nanoTime() ???
+    // ???????????? common PublishTimestampAligner ??????????????avDiff??
+        private long firstVideoCodecPtsUs = Long.MIN_VALUE;
     private long firstVideoMonoPtsUs = Long.MIN_VALUE;
     private int activeWidth = WIDTH;
     private int activeHeight = HEIGHT;
@@ -94,6 +135,25 @@ public final class AndroidCameraRtmpPublisher {
     }
 
     public void start(String url, Surface preview) {
+        publishTransport = PublishTransport.RTMP;
+        publishUrl = url;
+        rtpRemoteHost = null;
+        rtpRemotePort = 0;
+        rtpLocalPort = 0;
+        startInternal(preview);
+    }
+
+    public void startRtp(String remoteHost, int remotePort, int localPort, Surface preview) {
+        publishTransport = PublishTransport.RTP_UDP_VIDEO;
+        publishUrl = null;
+        rtpRemoteHost = remoteHost;
+        rtpRemotePort = remotePort;
+        rtpLocalPort = localPort;
+        startInternal(preview);
+    }
+
+    private void startInternal(Surface preview) {
+        // start() ??UI ????????????????????????????????????????        // ?????? try ?????????????????stop() ??????????
         if (running) {
             events.onPublishError("Publisher already running");
             return;
@@ -107,12 +167,12 @@ public final class AndroidCameraRtmpPublisher {
             events.onPublishError("Camera permission missing");
             return;
         }
-        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+        if (publishTransport == PublishTransport.RTMP
+                && context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)
                 != PackageManager.PERMISSION_GRANTED) {
             events.onPublishError("Record audio permission missing");
             return;
         }
-        publishUrl = url;
         previewSurface = preview;
         resetFlowStats();
         publisherStarted = false;
@@ -124,12 +184,17 @@ public final class AndroidCameraRtmpPublisher {
         running = true;
         android.util.Log.i(TAG, "start VERSION=" + BuildInfo.VERSION);
         try {
+            // ?????????????????            // 1. ???????????????????????            // 2. ?????? encoder input Surface??            // 3. ??? OpenGL router?????? Camera2 ?????Surface??            // 4. ??? native ???????????? AAC config ????????            // 5. ??????? Camera2????????? GL router??
             prepareCameraGeometry();
             startEncoder();
             startGlRouter();
-            startNativeAudioCapture();
+            if (publishTransport == PublishTransport.RTMP) {
+                startNativeAudioCapture();
+            }
             startCamera();
-            events.onPublishStatus("Camera/audio publish starting");
+            events.onPublishStatus(publishTransport == PublishTransport.RTP_UDP_VIDEO
+                    ? "Camera RTP video publish starting"
+                    : "Camera/audio RTMP publish starting");
         } catch (Exception e) {
             events.onPublishError("Camera publish start failed: " + e.getMessage());
             stop();
@@ -137,7 +202,7 @@ public final class AndroidCameraRtmpPublisher {
     }
 
     public void stop() {
-        running = false;
+        // stop() ??????????????ctivity ?????amera error??ncoder error??        // ????????????????????????????? stop helper ?????????????????        running = false;
         closeCamera();
         stopGlRouter();
         stopEncoder();
@@ -158,7 +223,8 @@ public final class AndroidCameraRtmpPublisher {
 
     public int[] previewAspectForCurrentCamera() {
         try {
-            prepareCameraGeometry();
+            // ???????????????????????????????????????????            // ????????????????????UI ????????encoder ????????????
+        prepareCameraGeometry();
             return new int[] { activeWidth, activeHeight };
         } catch (Exception e) {
             android.util.Log.w(TAG, "preview aspect fallback: " + e.getMessage());
@@ -220,6 +286,8 @@ public final class AndroidCameraRtmpPublisher {
 
     private void configureEncoder(EncoderConfig config) throws Exception {
         MediaFormat format = MediaFormat.createVideoFormat(MIME_AVC, config.width, config.height);
+
+        // Surface ?????? CPU ?????????OpenGL router ?????OES texture ?????        // encoder input Surface??ediaCodec ????????H.264 ?????
         format.setInteger(MediaFormat.KEY_COLOR_FORMAT,
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
         format.setInteger(MediaFormat.KEY_BIT_RATE, config.bitrateBps);
@@ -241,6 +309,8 @@ public final class AndroidCameraRtmpPublisher {
     }
 
     private void startGlRouter() throws Exception {
+        // GL router ?????????????????????????????????????????????        // Camera2 ?????? router ?????SurfaceTexture??outer ?????????
+        // preview Surface ??encoder Surface??
         glFrameRouter = new CameraGlFrameRouter(
                 activeWidth,
                 activeHeight,
@@ -256,6 +326,7 @@ public final class AndroidCameraRtmpPublisher {
     }
 
     private void startCamera() throws CameraAccessException {
+        // Camera2 ??open/configure/repeating request ????????HandlerThread??        // ?????? UI??????????????encoder drain ???????????
         cameraThread = new HandlerThread("StreamBridgeCamera");
         cameraThread.start();
         cameraHandler = new Handler(cameraThread.getLooper());
@@ -318,6 +389,8 @@ public final class AndroidCameraRtmpPublisher {
         sensorOrientationDegrees = sensorOrientation == null ? 0 : sensorOrientation;
         displayRotationDegrees = currentDisplayRotationDegrees();
         streamRotationDegrees = normalizeDegrees(sensorOrientationDegrees - displayRotationDegrees);
+
+        // ?????sensor active array ?????????????????????????????????????        // ???????????????????????????????????????????????????
         Rect activeArray =
                 cameraCharacteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
         boolean portraitStream = streamRotationDegrees == 90 || streamRotationDegrees == 270;
@@ -342,6 +415,8 @@ public final class AndroidCameraRtmpPublisher {
         if (orientedWidth <= 0 || orientedHeight <= 0) {
             return new int[] { WIDTH, HEIGHT };
         }
+
+        // ????????TARGET_LONG_SIDE??????????????????????????????????16??        // ?????? H.264 encoder ??16 ????????????????????????????
         boolean portrait = orientedHeight >= orientedWidth;
         int longSide = TARGET_LONG_SIDE;
         int shortSide = (int) Math.round(
@@ -370,7 +445,8 @@ public final class AndroidCameraRtmpPublisher {
             if (fallback == null) {
                 fallback = id;
             }
-            if (facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT) {
+            // ???????????????????????????????????????????????????            // fallback ??????????camera??
+        if (facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT) {
                 return id;
             }
         }
@@ -405,7 +481,9 @@ public final class AndroidCameraRtmpPublisher {
             if (cameraDevice == null || cameraInputSurface == null) {
                 return;
             }
-            cameraDevice.createCaptureSession(Arrays.asList(cameraInputSurface),
+
+            // Camera2 ?????GL router ?????Surface?????????????????Camera??            // ?????????????????????????????? OpenGL ???????
+        cameraDevice.createCaptureSession(Arrays.asList(cameraInputSurface),
                     new CameraCaptureSession.StateCallback() {
                         @Override
                         public void onConfigured(CameraCaptureSession session) {
@@ -446,6 +524,8 @@ public final class AndroidCameraRtmpPublisher {
     private void drainEncoder() {
         MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
         long frameDurationUs = 1_000_000L / FRAME_RATE;
+
+        // ??? encoder ?????? drain ?????amera/GL ????? input Surface ?????        // ???????????? H.264 packet?????AV publisher?????packet ??native??
         while (running) {
             int index;
             try {
@@ -463,6 +543,7 @@ public final class AndroidCameraRtmpPublisher {
                 continue;
             }
             if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                // ??? MediaCodec ?????????????????? H.264 SPS/PPS??                // RTMP/FLV sequence header ????????config????????????????????
                 MediaFormat output = encoder.getOutputFormat();
                 int outputWidth = output.containsKey(MediaFormat.KEY_WIDTH)
                         ? output.getInteger(MediaFormat.KEY_WIDTH) : -1;
@@ -525,6 +606,8 @@ public final class AndroidCameraRtmpPublisher {
     }
 
     private void startNativeAudioCapture() throws Exception {
+        // ????????AAC ?????native ??????
+        // AAudio input -> AMediaCodec AAC -> NativeRtmpPublishSession::write_audio_packet??        // Java ????????JNI ?????????????????? AAC csd-0??
         int result = nativeBridge.startPublishAudioCapture();
         if (result != 0) {
             throw new IllegalStateException("Native audio capture start failed: " + result
@@ -540,21 +623,48 @@ public final class AndroidCameraRtmpPublisher {
             if (!running || publisherStarted) {
                 return;
             }
+            if (videoCsd0 == null || videoCsd1 == null) {
+                events.onPublishStatus("Waiting video config");
+                return;
+            }
+
+            if (publishTransport == PublishTransport.RTP_UDP_VIDEO) {
+                int result = nativeBridge.startRtpVideoPublish(
+                        rtpRemoteHost,
+                        rtpRemotePort,
+                        rtpLocalPort,
+                        activeWidth,
+                        activeHeight,
+                        FRAME_RATE,
+                        activeBitrateBps,
+                        videoCsd0,
+                        videoCsd1);
+                if (result != 0) {
+                    events.onPublishError("Native RTP publisher start failed: "
+                            + result + " " + nativeBridge.publishStatus());
+                    running = false;
+                    return;
+                }
+                publisherStarted = true;
+                events.onPublishStatus("RTP video publisher started "
+                        + activeWidth + "x" + activeHeight
+                        + " -> " + rtpRemoteHost + ":" + rtpRemotePort);
+                return;
+            }
+
+            // RTMP/FLV header needs both H.264 SPS/PPS and AAC AudioSpecificConfig.
             if (audioCsd0 == null) {
                 audioCsd0 = nativeBridge.publishAudioCodecConfig();
                 if (audioCsd0 != null) {
                     android.util.Log.i(TAG, "native audio config ready csd=" + audioCsd0.length);
                 }
             }
-            if (videoCsd0 == null || videoCsd1 == null || audioCsd0 == null) {
-                events.onPublishStatus("Waiting AV config video="
-                        + (videoCsd0 != null && videoCsd1 != null)
-                        + " audio=" + (audioCsd0 != null));
-                if (audioCsd0 == null) {
-                    scheduleTryStartNativePublisher();
-                }
+            if (audioCsd0 == null) {
+                events.onPublishStatus("Waiting AV config video=true audio=false");
+                scheduleTryStartNativePublisher();
                 return;
             }
+
             int result = nativeBridge.startAvPublish(
                     publishUrl,
                     activeWidth,
@@ -579,11 +689,12 @@ public final class AndroidCameraRtmpPublisher {
                     + " audio=" + AUDIO_SAMPLE_RATE + "Hz native");
         }
     }
-
     private void scheduleTryStartNativePublisher() {
         if (audioConfigRetryScheduled) {
             return;
         }
+
+        // ??? config ?????????????????????????????Handler ????????        // ???????????????????????????????UI ?????????????????
         audioConfigRetryScheduled = true;
         new Handler(context.getMainLooper()).postDelayed(() -> {
             audioConfigRetryScheduled = false;
@@ -616,6 +727,8 @@ public final class AndroidCameraRtmpPublisher {
         if (deltaUs < 0) {
             deltaUs = 0;
         }
+
+        // ??? MediaCodec ??? PTS ???????????????????????????????        // camera/encoder???????clock domain ???????????? monotonic ?????
         return firstVideoMonoPtsUs + deltaUs;
     }
 
@@ -639,6 +752,8 @@ public final class AndroidCameraRtmpPublisher {
             return;
         }
         long bitrateKbps = elapsedMs <= 0 ? 0 : encoderOutputBytes * 8L / elapsedMs;
+        // ??????????????????????????????ative status ?????RTMP writer
+        // ????????????????lignDrop??vDiffUs ????????????????????        // Java encoder??ative ?????TMP ????????????????
         android.util.Log.i(TAG, "flow encoder frames=" + encoderOutputFrames
                 + " key=" + encoderKeyFrames
                 + " bytes=" + encoderOutputBytes
@@ -711,6 +826,7 @@ public final class AndroidCameraRtmpPublisher {
     }
 
     private void stopEncoder() {
+        // signalEndOfInputStream() ??Surface ?????encoder ??????????????        // stop() ??? running ?????false?????signal ????????????????
         if (encoder != null) {
             try {
                 encoder.signalEndOfInputStream();
@@ -749,6 +865,7 @@ public final class AndroidCameraRtmpPublisher {
             encoder = null;
         }
         if (encoderInputSurface != null) {
+            // input Surface ??MediaCodec ??????????????encoder ???????
             encoderInputSurface.release();
             encoderInputSurface = null;
         }

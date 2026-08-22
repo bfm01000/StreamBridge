@@ -131,6 +131,7 @@ Result<std::vector<MediaPacket>> FFmpegVideoEncoder::encode(VideoFrame frame) {
         MediaPacket mp;
         mp.type = MediaType::Video;
         mp.codec = CodecId::H264;
+        mp.h264_format = H264PacketFormat::AnnexB;
         mp.pts.us = packet_->pts;
         mp.dts.us = packet_->dts;
         mp.is_key_frame = (packet_->flags & AV_PKT_FLAG_KEY) != 0;
@@ -162,6 +163,7 @@ Result<std::vector<MediaPacket>> FFmpegVideoEncoder::drain() {
         MediaPacket mp;
         mp.type = MediaType::Video;
         mp.codec = CodecId::H264;
+        mp.h264_format = H264PacketFormat::AnnexB;
         mp.pts.us = packet_->pts;
         mp.dts.us = packet_->dts;
         mp.is_key_frame = (packet_->flags & AV_PKT_FLAG_KEY) != 0;

@@ -12,9 +12,9 @@
 #endif
 #include "ffmpeg/ffmpeg_video_encoder.h"
 #include "ffmpeg/ffmpeg_audio_encoder.h"
-#include "ffmpeg/ffmpeg_rtmp_publisher.h"
 
 #include "app_config.h"
+#include "publisher_factory.h"
 #include "streambridge/session.h"
 
 using namespace streambridge;
@@ -42,8 +42,9 @@ int main(int argc, char* argv[]) {
     else set_log_level(LogLevel::Info);
 
     SB_LOG_I("main", "StreamBridge Publisher starting (M3)");
+    SB_LOG_I("main", "transport=%s", transport_kind_name(app_cfg.transport.kind));
     SB_LOG_I("main", "rtmp-url=%s video=%s %dx%d@%dfps bitrate=%d audio=%s",
-          app_cfg.rtmp_url.c_str(), app_cfg.video_source.c_str(),
+          app_cfg.transport.rtmp_flv.url.c_str(), app_cfg.video_source.c_str(),
           app_cfg.video_width, app_cfg.video_height, app_cfg.video_fps,
           app_cfg.video_bitrate,
           app_cfg.enable_audio ? app_cfg.audio_source.c_str() : "disabled");
@@ -58,8 +59,12 @@ int main(int argc, char* argv[]) {
         video_cap = std::make_unique<FFmpegVideoCapture>();
     }
     auto video_enc = std::make_unique<FFmpegVideoEncoder>();
-    auto publisher = std::make_unique<FFmpegRTMPPublisher>();
-
+    auto publisher_result = create_publisher_for_transport(app_cfg.transport);
+    if (publisher_result.is_err()) {
+        SB_LOG_E("main", "create publisher failed: %s", publisher_result.to_string().c_str());
+        return 1;
+    }
+    auto publisher = std::move(*publisher_result);
     std::unique_ptr<IAudioCapture> audio_cap;
     std::unique_ptr<IAudioEncoder> audio_enc;
     if (app_cfg.enable_audio) {

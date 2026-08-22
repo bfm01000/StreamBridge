@@ -1,5 +1,5 @@
-// PublishSession 实现 — 线程管理、状态机、数据流编排
-// M3: 支持视频+音频推流
+// PublishSession ??? ???????????????????????
+// M3: ??????+??????
 
 #include "streambridge/session.h"
 #include "streambridge/logging.h"
@@ -14,36 +14,36 @@ namespace streambridge {
 // PublishSession::Impl
 // ============================================================
 struct PublishSession::Impl {
-    // 平台适配器（依赖注入）
+    // ?????????????????
     std::unique_ptr<IVideoCapture> video_capture;
     std::unique_ptr<IAudioCapture> audio_capture;
     std::unique_ptr<IVideoEncoder> video_encoder;
     std::unique_ptr<IAudioEncoder> audio_encoder;
     std::unique_ptr<IMediaPublisher> publisher;
 
-    // 配置
+    // ???
     PublishSessionConfig config;
     bool has_audio = false;
 
-    // 队列
+    // ???
     MediaQueue<VideoFrame> raw_video_queue;
     MediaQueue<AudioFrame> raw_audio_queue;
     MediaQueue<MediaPacket> video_pkt_queue;
     MediaQueue<MediaPacket> audio_pkt_queue;
 
-    // 状态
+    // ????
     std::atomic<SessionState> state{SessionState::Idle};
     std::shared_ptr<ISessionObserver> observer;
 
-    // 停止控制
+    // ??????
     StopSource stop_source;
 
-    // 线程（capture 线程由各自 capture 对象内部管理）
+    // ?????apture ????????capture ???????????
     std::thread video_encode_thread;
     std::thread audio_encode_thread;
     std::thread mux_thread;
 
-    // 统计
+    // ???
     std::atomic<int64_t> video_frames_captured{0};
     std::atomic<int64_t> audio_frames_captured{0};
     std::atomic<int64_t> video_frames_encoded{0};
@@ -62,7 +62,7 @@ struct PublishSession::Impl {
           audio_encoder(std::move(ae)),
           publisher(std::move(pub)) {}
 
-    // 状态迁移
+    // ???????
     void set_state(SessionState new_state) {
         auto old = state.exchange(new_state);
         if (observer) {
@@ -72,7 +72,7 @@ struct PublishSession::Impl {
               session_state_name(old), session_state_name(new_state));
     }
 
-    // 线程：视频编码
+    // ???????????
     void video_encode_loop() {
         SB_LOG_I("encode", "video encode thread started");
 
@@ -101,7 +101,7 @@ struct PublishSession::Impl {
         SB_LOG_I("encode", "video encode thread exiting");
     }
 
-    // 线程：音频编码
+    // ???????????
     void audio_encode_loop() {
         SB_LOG_I("encode", "audio encode thread started");
 
@@ -130,12 +130,12 @@ struct PublishSession::Impl {
         SB_LOG_I("encode", "audio encode thread exiting");
     }
 
-    // 线程：封装 + 发布（音视频交织）
+    // ????????+ ??????????????
     void mux_loop() {
         SB_LOG_I("mux", "mux/publish thread started");
 
-        // 设备源双路起始对齐：以较晚启动的一路为零点，丢弃另一路早于零点的包。
-        // 文件源两路同一时间线，对齐逻辑对其无副作用（base≈0）。
+        // ?????????????????????????????????????????????????????
+        // ??????????????????????????????????ase??????
         AvStartAligner aligner;
         bool diag_v_done = false;
         bool diag_a_done = false;
@@ -147,7 +147,7 @@ struct PublishSession::Impl {
             bool got_video = (video_pkt_queue.try_peek(vpkt) == QueueResult::Ok);
             bool got_audio = this->has_audio && (audio_pkt_queue.try_peek(apkt) == QueueResult::Ok);
 
-            // 诊断：记录两路首包 PTS（debug 级别）
+            // ??????????????PTS??ebug ?????
             if (!diag_v_done && got_video) {
                 SB_LOG_D("mux", "first video pkt pts=%lld", static_cast<long long>(vpkt.pts.us));
                 diag_v_done = true;
@@ -173,7 +173,7 @@ struct PublishSession::Impl {
                     continue;
                 }
                 if (d.action == AvStartAligner::Action::Wait) {
-                    // 对齐前：只等不丢，让两路首包都留在队列里
+                    // ??????????????????????????????
                     std::this_thread::sleep_for(std::chrono::milliseconds(2));
                     continue;
                 }
@@ -192,7 +192,7 @@ struct PublishSession::Impl {
 
             MediaPacket pkt;
             if (got_video && got_audio) {
-                // Both available: interleave by PTS（对齐后的零点时间轴）
+                // Both available: interleave by PTS?????????????????
                 if (aligner.adjust(vpkt.pts.us) <= aligner.adjust(apkt.pts.us)) {
                     video_pkt_queue.try_pop(pkt);
                 } else {
@@ -209,7 +209,7 @@ struct PublishSession::Impl {
                 if (res == QueueResult::Timeout) continue;
             }
 
-            // 平移到零点时间轴（未启用对齐时 base=0，恒等）
+            // ???????????????????????base=0??????
             pkt.pts.us = aligner.adjust(pkt.pts.us);
             if (pkt.dts.us >= 0) pkt.dts.us = aligner.adjust(pkt.dts.us);
 
@@ -230,7 +230,7 @@ struct PublishSession::Impl {
 };
 
 // ============================================================
-// PublishSession 公开接口
+// PublishSession ??????
 // ============================================================
 PublishSession::PublishSession(
     std::unique_ptr<IVideoCapture> vc,
@@ -258,21 +258,21 @@ Result<void> PublishSession::prepare(const PublishSessionConfig& config) {
     impl_->has_audio = config.enable_audio && impl_->audio_capture != nullptr
                        && impl_->audio_encoder != nullptr;
 
-    // 打开视频采集
+    // ?????????
     auto ret = impl_->video_capture->open(config.video_capture);
     if (ret.is_err()) {
         impl_->set_state(SessionState::Error);
         return ret;
     }
 
-    // 打开视频编码器
+    // ???????????
     ret = impl_->video_encoder->open(config.video_encode);
     if (ret.is_err()) {
         impl_->set_state(SessionState::Error);
         return ret;
     }
 
-    // 打开音频采集（如果启用）
+    // ??????????????????
     if (impl_->has_audio) {
         ret = impl_->audio_capture->open(config.audio_capture);
         if (ret.is_err()) {
@@ -286,14 +286,20 @@ Result<void> PublishSession::prepare(const PublishSessionConfig& config) {
         }
     }
 
-    // 打开发布器
-    ret = impl_->publisher->open(config.publish);
+    PublishConfig publish_config;
+    if (config.transport.is_rtmp()) {
+        publish_config.url = config.transport.rtmp_flv.url;
+        publish_config.connect_timeout_ms = config.transport.rtmp_flv.connect_timeout_ms;
+        publish_config.write_timeout_ms = config.transport.rtmp_flv.write_timeout_ms;
+    }
+
+    ret = impl_->publisher->open(publish_config);
     if (ret.is_err()) {
         impl_->set_state(SessionState::Error);
         return ret;
     }
 
-    // 构建 StreamInfo
+    // ??? StreamInfo
     StreamInfo video_info;
     video_info.type = MediaType::Video;
     video_info.codec = CodecId::H264;
@@ -315,7 +321,7 @@ Result<void> PublishSession::prepare(const PublishSessionConfig& config) {
         audio_info.bitrate_bps = config.audio_encode.bitrate_bps;
     }
 
-    // 写 FLV header + sequence headers
+    // ??FLV header + sequence headers
     ret = impl_->publisher->write_header(video_info, audio_info);
     if (ret.is_err()) {
         impl_->set_state(SessionState::Error);
@@ -334,7 +340,7 @@ Result<void> PublishSession::start() {
 
     impl_->stop_source.reset();
 
-    // 启动视频采集
+    // ?????????
     auto ret = impl_->video_capture->start(
         [this](VideoFrame frame) {
             impl_->video_frames_captured++;
@@ -352,7 +358,7 @@ Result<void> PublishSession::start() {
         });
     if (ret.is_err()) return ret;
 
-    // 启动音频采集（如果启用）
+    // ??????????????????
     if (impl_->has_audio) {
         ret = impl_->audio_capture->start(
             [this](AudioFrame frame) {
@@ -369,13 +375,13 @@ Result<void> PublishSession::start() {
         if (ret.is_err()) return ret;
     }
 
-    // 启动编码线程
+    // ?????????
     impl_->video_encode_thread = std::thread(&Impl::video_encode_loop, impl_.get());
     if (impl_->has_audio) {
         impl_->audio_encode_thread = std::thread(&Impl::audio_encode_loop, impl_.get());
     }
 
-    // 启动 mux 线程
+    // ??? mux ???
     impl_->mux_thread = std::thread(&Impl::mux_loop, impl_.get());
 
     impl_->set_state(SessionState::Running);
@@ -387,31 +393,31 @@ void PublishSession::stop() {
     if (current == SessionState::Idle ||
         current == SessionState::Stopped ||
         current == SessionState::Stopping) {
-        return;  // 幂等
+        return;  // ???
     }
 
     SB_LOG_I("session", "stopping...");
     impl_->set_state(SessionState::Stopping);
 
-    // 1. 请求停止
+    // 1. ??????
     impl_->stop_source.request_stop();
 
-    // 2. 停止采集
+    // 2. ??????
     impl_->video_capture->stop();
     if (impl_->has_audio) {
         impl_->audio_capture->stop();
     }
 
-    // 3. abort 队列 → 唤醒所有阻塞的 pop
+    // 3. abort ??? ????????????? pop
     impl_->raw_video_queue.abort();
     impl_->raw_audio_queue.abort();
     impl_->video_pkt_queue.abort();
     impl_->audio_pkt_queue.abort();
 
-    // 4. interrupt 网络 I/O
+    // 4. interrupt ??? I/O
     impl_->publisher->interrupt();
 
-    // 5. join 线程
+    // 5. join ???
     if (impl_->video_encode_thread.joinable()) {
         impl_->video_encode_thread.join();
     }
@@ -422,13 +428,13 @@ void PublishSession::stop() {
         impl_->mux_thread.join();
     }
 
-    // 6. drain 编码器残余
+    // 6. drain ????????
     impl_->video_encoder->drain();
     if (impl_->has_audio) {
         impl_->audio_encoder->drain();
     }
 
-    // 7. 关闭模块
+    // 7. ??????
     impl_->publisher->close();
     impl_->video_encoder->close();
     if (impl_->has_audio) {
@@ -439,9 +445,9 @@ void PublishSession::stop() {
 
     impl_->set_state(SessionState::Stopped);
 
-    // 汇总
+    // ????
     auto ps = impl_->publisher->stats();
-    SB_LOG_I("session", "stopped — video cap=%ld enc=%ld audio cap=%ld enc=%ld "
+    SB_LOG_I("session", "stopped ??video cap=%ld enc=%ld audio cap=%ld enc=%ld "
           "sent=%ld bytes=%ld drop=%ld",
           impl_->video_frames_captured.load(), impl_->video_frames_encoded.load(),
           impl_->audio_frames_captured.load(), impl_->audio_frames_encoded.load(),

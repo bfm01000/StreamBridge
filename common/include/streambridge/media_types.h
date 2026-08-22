@@ -117,6 +117,12 @@ enum class CodecId {
     Opus    = 4,
 };
 
+enum class H264PacketFormat {
+    Unknown = 0,
+    AnnexB = 1,             // 00 00 01 / 00 00 00 01 start-code delimited NAL units
+    AvccLengthPrefixed = 2, // [length][NAL] as used by AVCDecoderConfigurationRecord containers
+};
+
 enum class PixelFormat {
     Unknown  = 0,
     YUV420P  = 1,
@@ -195,6 +201,7 @@ struct Plane {
 struct MediaPacket {
     MediaType type = MediaType::Unknown;
     CodecId codec = CodecId::Unknown;
+    H264PacketFormat h264_format = H264PacketFormat::Unknown;
     TimePointUs pts{0};
     TimePointUs dts{0};
     TimeDeltaUs duration{0};

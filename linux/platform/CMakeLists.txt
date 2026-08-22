@@ -5,6 +5,8 @@ add_library(sb_linux_platform STATIC
     capture/v4l2_video_capture.cpp
     render/sdl_video_renderer.cpp
     output/alsa_audio_output.cpp
+    network/udp_socket.cpp
+    network/rtp_udp_video_receiver.cpp
 )
 
 target_link_libraries(sb_linux_platform PUBLIC
@@ -21,7 +23,7 @@ if(ALSA_FOUND)
     target_include_directories(sb_linux_platform PUBLIC ${ALSA_INCLUDE_DIRS})
 endif()
 
-# SDL2（播放端视频渲染）
+# SDL2??????????????
 pkg_check_modules(SDL2 sdl2)
 if(SDL2_FOUND)
     target_link_libraries(sb_linux_platform PUBLIC ${SDL2_LIBRARIES})

@@ -1,6 +1,8 @@
 #include <android/native_window_jni.h>
 #include <jni.h>
 
+#include <cstdint>
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -102,6 +104,36 @@ Java_com_streambridge_android_core_NativeBridge_nativeStart(
     return result;
 }
 
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_streambridge_android_core_NativeBridge_nativeStartRtpVideo(
+        JNIEnv* env,
+        jclass,
+        jlong handle,
+        jint local_port,
+        jobject surface,
+        jint width,
+        jint height,
+        jdouble frame_rate,
+        jint decode_path) {
+    NativePlaybackSession* session = from_handle(handle);
+    if (session == nullptr) {
+        return -1;
+    }
+    ANativeWindow* window = surface != nullptr ? ANativeWindow_fromSurface(env, surface) : nullptr;
+    int result = session->start_rtp_video(
+        static_cast<uint16_t>(local_port),
+        window,
+        width,
+        height,
+        frame_rate,
+        streambridge::android::video_decode_path_from_int(decode_path));
+    if (window != nullptr) {
+        ANativeWindow_release(window);
+    }
+    return result;
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_streambridge_android_core_NativeBridge_nativeStop(JNIEnv*, jclass, jlong handle) {
     NativePlaybackSession* session = from_handle(handle);
@@ -183,6 +215,37 @@ Java_com_streambridge_android_core_NativeBridge_nativePublisherStartVideoOnly(
         codec_config);
 }
 
+extern "C" JNIEXPORT jint JNICALL
+Java_com_streambridge_android_core_NativeBridge_nativePublisherStartRtpVideoOnly(
+        JNIEnv* env,
+        jclass,
+        jlong handle,
+        jstring remote_host,
+        jint remote_port,
+        jint local_port,
+        jint width,
+        jint height,
+        jint frame_rate,
+        jint bitrate_bps,
+        jbyteArray csd0,
+        jbyteArray csd1) {
+    NativeRtmpPublishSession* session = publisher_from_handle(handle);
+    if (session == nullptr) {
+        return -1;
+    }
+    std::vector<uint8_t> codec_config;
+    append_csd(codec_config, to_vector(env, csd0));
+    append_csd(codec_config, to_vector(env, csd1));
+    return session->start_rtp_video_only(
+        to_string(env, remote_host),
+        remote_port,
+        local_port,
+        width,
+        height,
+        frame_rate,
+        bitrate_bps,
+        codec_config);
+}
 extern "C" JNIEXPORT jint JNICALL
 Java_com_streambridge_android_core_NativeBridge_nativePublisherStartAv(
         JNIEnv* env,

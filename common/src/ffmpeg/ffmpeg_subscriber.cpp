@@ -74,6 +74,12 @@ uint32_t read_be_length(const uint8_t* data, int length_size) {
     return value;
 }
 
+bool has_annexb_start_code(const std::vector<uint8_t>& data) {
+    return data.size() >= 4 &&
+        ((data[0] == 0 && data[1] == 0 && data[2] == 1) ||
+         (data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 1));
+}
+
 bool convert_length_prefixed_nals_to_annexb(std::vector<uint8_t>& data,
                                             int length_size) {
     if (length_size != 1 && length_size != 2 && length_size != 4) {
@@ -319,6 +325,9 @@ streambridge::Result<streambridge::MediaPacket> FFmpegSubscriber::read_packet() 
         }
         packet.type = streambridge::MediaType::Video;
         packet.codec = video_info_.codec;
+        if (packet.codec == streambridge::CodecId::H264) {
+            packet.h264_format = streambridge::H264PacketFormat::Unknown;
+        }
         packet.pts = streambridge::TimePointUs{ts_to_us(pkt->pts, video_time_base_)};
         packet.dts = streambridge::TimePointUs{ts_to_us(pkt->dts, video_time_base_)};
         packet.duration = streambridge::TimeDeltaUs{ts_to_us(pkt->duration, video_time_base_)};
@@ -365,12 +374,17 @@ streambridge::Result<streambridge::MediaPacket> FFmpegSubscriber::read_packet() 
                 streambridge::ErrorCode::MalformedAvcc,
                 "failed to convert length-prefixed video packet to Annex-B");
         }
+        if (packet.codec == streambridge::CodecId::H264) {
+            packet.h264_format = streambridge::H264PacketFormat::AnnexB;
+        }
         if (packet.sequence_number < 5) {
             SB_LOG_I(kLogTag,
                     "annexb pkt#%lld converted %zu -> %zu bytes",
                     static_cast<long long>(packet.sequence_number),
                     before_size, packet.data.size());
         }
+    } else if (packet.codec == streambridge::CodecId::H264 && has_annexb_start_code(packet.data)) {
+        packet.h264_format = streambridge::H264PacketFormat::AnnexB;
     }
 
     return streambridge::Result<streambridge::MediaPacket>::ok(std::move(packet));

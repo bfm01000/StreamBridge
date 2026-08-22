@@ -3,13 +3,19 @@
 #include <algorithm>
 #include <chrono>
 #include <sstream>
+#include <utility>
 
+#include "android_rtp_udp_video_publisher.h"
+#include "ffmpeg_rtmp_publisher.h"
+#include "streambridge/rtp_packet.h"
 #include "streambridge/logging.h"
+#include "streambridge/h264_nalu_parser.h"
 
 namespace streambridge::android {
 
 namespace {
 constexpr const char* kTag = "NativeRtmpPublishSession";
+
 }
 
 MediaQueue<MediaPacket>::Config NativeRtmpPublishSession::queue_config() {
@@ -106,7 +112,8 @@ int NativeRtmpPublishSession::start_av(
 
     PublishConfig publish_config;
     publish_config.url = url;
-    auto open_result = publisher_.open(publish_config);
+    publisher_ = std::make_unique<FFmpegRTMPPublisher>();
+    auto open_result = publisher_->open(publish_config);
     if (!open_result.is_ok()) {
         std::lock_guard<std::mutex> lock(mutex_);
         status_ = "PublishError open: " + open_result.error_message();
@@ -137,12 +144,12 @@ int NativeRtmpPublishSession::start_av(
         audio.bitrate_bps = audio_bitrate_bps;
     }
 
-    auto header_result = publisher_.write_header(video, audio);
+    auto header_result = publisher_->write_header(video, audio);
     if (!header_result.is_ok()) {
         std::lock_guard<std::mutex> lock(mutex_);
         status_ = "PublishError header: " + header_result.error_message();
         SB_LOG_E(kTag, "%s", status_.c_str());
-        publisher_.close();
+        publisher_->close();
         return -4;
     }
 
@@ -165,6 +172,83 @@ int NativeRtmpPublishSession::start_av(
     return 0;
 }
 
+
+int NativeRtmpPublishSession::start_rtp_video_only(
+        const std::string& remote_host,
+        int remote_port,
+        int local_port,
+        int width,
+        int height,
+        int frame_rate,
+        int bitrate_bps,
+        const std::vector<uint8_t>& codec_config) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (running_) {
+            status_ = "PublishError already running";
+            return -1;
+        }
+    }
+    if (remote_host.empty() || remote_port <= 0 || width <= 0 || height <= 0) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        status_ = "PublishError invalid RTP publish config";
+        return -2;
+    }
+
+    RtpUdpVideoTransportConfig transport;
+    transport.remote_host = remote_host;
+    transport.remote_port = static_cast<uint16_t>(remote_port);
+    transport.local_port = local_port > 0 ? static_cast<uint16_t>(local_port) : 0;
+    transport.payload_type = kRtpPayloadTypeH264Dynamic;
+    transport.ssrc = 0x53544241;  // "STBA" stable default for Android sender demos.
+    transport.max_payload_size = 1200;
+    publisher_ = std::make_unique<AndroidRtpUdpVideoPublisher>(transport);
+
+    auto open_result = publisher_->open({});
+    if (!open_result.is_ok()) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        status_ = "PublishError rtp open: " + open_result.error_message();
+        SB_LOG_E(kTag, "%s", status_.c_str());
+        return -3;
+    }
+
+    StreamInfo video;
+    video.type = MediaType::Video;
+    video.codec = CodecId::H264;
+    video.width = width;
+    video.height = height;
+    video.frame_rate = static_cast<double>(frame_rate);
+    video.pixel_format = PixelFormat::Unknown;
+    video.codec_extradata = codec_config;
+    video.time_base = Rational::micros();
+    video.bitrate_bps = bitrate_bps;
+
+    auto header_result = publisher_->write_header(video, {});
+    if (!header_result.is_ok()) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        status_ = "PublishError rtp header: " + header_result.error_message();
+        SB_LOG_E(kTag, "%s", status_.c_str());
+        publisher_->close();
+        return -4;
+    }
+
+    packet_queue_.reset();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        running_ = true;
+        queued_count_ = 0;
+        written_count_ = 0;
+        key_count_ = 0;
+        dropped_before_align_ = 0;
+        timestamp_aligner_.reset();
+        status_ = "PublishingRtp queued=0 written=0";
+    }
+    writer_thread_ = std::thread(&NativeRtmpPublishSession::writer_loop, this);
+    SB_LOG_I(kTag,
+             "started Android camera RTP publish remote=%s:%d video=%dx%d fps=%d bitrate=%d",
+             remote_host.c_str(), remote_port, width, height, frame_rate, bitrate_bps);
+    return 0;
+}
 int NativeRtmpPublishSession::write_video_packet(
         const uint8_t* data,
         size_t size,
@@ -195,6 +279,7 @@ int NativeRtmpPublishSession::write_video_packet(
 
         packet.type = MediaType::Video;
         packet.codec = CodecId::H264;
+        packet.h264_format = h264_detect_packet_format(data, size);
         packet.pts = decision.normalized_pts;
         packet.dts.us = dts_us >= 0
             ? std::max<int64_t>(0, dts_us - decision.base_pts.us)
@@ -281,12 +366,12 @@ void NativeRtmpPublishSession::stop() {
         }
         running_ = false;
     }
-    publisher_.interrupt();
+    if (publisher_) publisher_->interrupt();
     packet_queue_.abort();
     if (writer_thread_.joinable()) {
         writer_thread_.join();
     }
-    publisher_.close();
+    if (publisher_) publisher_->close();
     packet_queue_.reset();
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -323,7 +408,7 @@ void NativeRtmpPublishSession::writer_loop() {
             break;
         } else if (pop_result == QueueResult::Ok) {
             auto write_start = std::chrono::steady_clock::now();
-            auto write_result = publisher_.write_packet(packet);
+            auto write_result = publisher_->write_packet(packet);
             auto write_us = std::chrono::duration_cast<std::chrono::microseconds>(
                 std::chrono::steady_clock::now() - write_start).count();
             write_total_us += write_us;
@@ -334,7 +419,7 @@ void NativeRtmpPublishSession::writer_loop() {
                 status_ = "PublishError packet: " + write_result.error_message();
                 SB_LOG_E(kTag, "%s", status_.c_str());
                 running_ = false;
-                publisher_.interrupt();
+                if (publisher_) publisher_->interrupt();
                 break;
             }
 
@@ -351,7 +436,7 @@ void NativeRtmpPublishSession::writer_loop() {
             now - stats_start).count();
         if (elapsed_ms >= 1000) {
             auto queue_stats = packet_queue_.stats();
-            auto publisher_stats = publisher_.stats();
+            auto publisher_stats = publisher_ ? publisher_->stats() : IMediaPublisher::Stats{};
             const int64_t bitrate_kbps = elapsed_ms > 0 ? bytes * 8 / elapsed_ms : 0;
             const int64_t avg_write_us = frames > 0 ? write_total_us / frames : 0;
             {

@@ -13,6 +13,7 @@
 #include "streambridge/media_types.h"
 #include "streambridge/stop_token.h"
 #include "streambridge/transport.h"
+#include "streambridge/transport_config.h"
 
 namespace streambridge {
 
@@ -70,7 +71,7 @@ struct PublishSessionConfig {
     AudioCaptureConfig audio_capture;
     VideoEncodeConfig video_encode;
     AudioEncodeConfig audio_encode;
-    PublishConfig publish;
+    TransportConfig transport;
 
     // 队列配置
     size_t raw_video_queue_size = 3;

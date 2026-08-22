@@ -11,7 +11,7 @@
 #include "streambridge/media_queue.h"
 #include "streambridge/media_types.h"
 #include "streambridge/publish_timestamp_aligner.h"
-#include "ffmpeg_rtmp_publisher.h"
+#include "streambridge/transport.h"
 
 namespace streambridge::android {
 
@@ -36,6 +36,14 @@ public:
                  int channels,
                  int audio_bitrate_bps,
                  const std::vector<uint8_t>& audio_codec_config);
+    int start_rtp_video_only(const std::string& remote_host,
+                             int remote_port,
+                             int local_port,
+                             int width,
+                             int height,
+                             int frame_rate,
+                             int bitrate_bps,
+                             const std::vector<uint8_t>& codec_config);
     int write_video_packet(const uint8_t* data,
                            size_t size,
                            int64_t pts_us,
@@ -60,7 +68,7 @@ private:
     void on_native_audio_error(const std::string& message);
 
     mutable std::mutex mutex_;
-    FFmpegRTMPPublisher publisher_;
+    std::unique_ptr<IMediaPublisher> publisher_;
     MediaQueue<MediaPacket> packet_queue_;
     std::unique_ptr<NativeAudioAacEncoder> audio_encoder_;
     std::thread writer_thread_;

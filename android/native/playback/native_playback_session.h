@@ -13,6 +13,7 @@
 #include "streambridge/session.h"
 
 #include "audio_decode_worker.h"
+#include "android_rtp_udp_video_receiver.h"
 #include "demux_worker.h"
 #include "native_video_renderer.h"
 #include "playback_metrics.h"
@@ -21,7 +22,7 @@
 
 namespace streambridge::android {
 
-// Android 播放会话：编排解封装、音视频解码、同步与渲染各线程，并维护 Session 状态机与生命周期。
+// Android ????????????????????????????????????????????Session ???????????????
 class NativePlaybackSession {
 public:
     NativePlaybackSession();
@@ -32,6 +33,9 @@ public:
 
     int start(std::string url, ANativeWindow* window,
               VideoDecodePath decode_path = VideoDecodePath::Auto);
+    int start_rtp_video(uint16_t local_port, ANativeWindow* window,
+                        int width, int height, double frame_rate,
+                        VideoDecodePath decode_path = VideoDecodePath::Auto);
     void stop();
 
     void set_surface(ANativeWindow* window);
@@ -43,6 +47,7 @@ public:
 private:
     // Thread entry points
     void demux_loop();
+    void rtp_video_receive_loop();
     void video_loop();
     void audio_loop();
 
@@ -53,11 +58,18 @@ private:
     void request_stop();
     bool is_stopping() const;
 
+    enum class InputMode { Rtmp, RtpUdpVideo };
+
     // State (mutex protected)
     mutable std::mutex mutex_;
     streambridge::SessionState state_ = streambridge::SessionState::Idle;
     std::string last_error_;
     std::string url_;
+    InputMode input_mode_ = InputMode::Rtmp;
+    uint16_t rtp_local_port_ = 0;
+    int rtp_video_width_ = 0;
+    int rtp_video_height_ = 0;
+    double rtp_video_frame_rate_ = 0.0;
     VideoDecodePath decode_path_ = VideoDecodePath::Auto;
 
     // Sync primitives
@@ -67,6 +79,7 @@ private:
 
     // Components
     std::unique_ptr<DemuxWorker> demux_worker_;
+    std::unique_ptr<AndroidRtpUdpVideoReceiver> rtp_video_receiver_;
     std::unique_ptr<VideoDecodeWorker> video_worker_;
     std::unique_ptr<AudioDecodeWorker> audio_worker_;
     NativeVideoRenderer renderer_;

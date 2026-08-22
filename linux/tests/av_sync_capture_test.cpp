@@ -172,7 +172,7 @@ static bool record_capture(const std::string& output_path, int duration_s) {
     cfg.audio_encode.sample_rate = 48000;
     cfg.audio_encode.channels = 2;
     cfg.audio_encode.bitrate_bps = 128'000;
-    cfg.publish.url = output_path;  // 本地文件路径 — 复用生产 FLV mux 链路
+    cfg.transport.rtmp_flv.url = output_path;  // 本地文件路径 — 复用生产 FLV mux 链路
 
     auto ret = session.prepare(cfg);
     if (ret.is_err()) {

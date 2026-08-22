@@ -54,6 +54,11 @@ int NativePlaybackSession::start(
     {
         std::lock_guard<std::mutex> lock(mutex_);
         url_ = std::move(url);
+        input_mode_ = InputMode::Rtmp;
+        rtp_local_port_ = 0;
+        rtp_video_width_ = 0;
+        rtp_video_height_ = 0;
+        rtp_video_frame_rate_ = 0.0;
         decode_path_ = decode_path;
         last_error_.clear();
         abort_requested_ = false;
@@ -85,6 +90,73 @@ int NativePlaybackSession::start(
     log_info("playback session started");
     return 0;
 }
+int NativePlaybackSession::start_rtp_video(
+        uint16_t local_port,
+        ANativeWindow* window,
+        int width,
+        int height,
+        double frame_rate,
+        VideoDecodePath decode_path) {
+    stop();
+
+    if (local_port == 0) {
+        last_error_ = "RTP local port is required";
+        set_state(streambridge::SessionState::Error);
+        return -2;
+    }
+    if (window == nullptr) {
+        last_error_ = "surface is not ready";
+        set_state(streambridge::SessionState::Error);
+        return -3;
+    }
+    if (width <= 0 || height <= 0) {
+        last_error_ = "RTP video geometry is invalid";
+        set_state(streambridge::SessionState::Error);
+        return -4;
+    }
+
+    streambridge::StreamInfo video_info;
+    video_info.type = streambridge::MediaType::Video;
+    video_info.codec = streambridge::CodecId::H264;
+    video_info.width = width;
+    video_info.height = height;
+    video_info.frame_rate = frame_rate > 0.0 ? frame_rate : 30.0;
+    video_info.time_base = streambridge::Rational::micros();
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        url_.clear();
+        input_mode_ = InputMode::RtpUdpVideo;
+        rtp_local_port_ = local_port;
+        rtp_video_width_ = width;
+        rtp_video_height_ = height;
+        rtp_video_frame_rate_ = video_info.frame_rate;
+        decode_path_ = decode_path;
+        last_error_.clear();
+        abort_requested_ = false;
+        surface_paused_ = false;
+        stop_in_progress_ = false;
+        first_video_pts_us_ = -1;
+        first_audio_pts_us_ = -1;
+        video_info_ = std::move(video_info);
+        audio_info_.reset();
+    }
+    metrics_.reset();
+
+    video_packet_queue_.reset();
+    audio_packet_queue_.reset();
+    renderer_.set_surface(window);
+    clock_.reset();
+
+    set_state(streambridge::SessionState::Preparing);
+
+    demux_thread_ = std::thread(&NativePlaybackSession::rtp_video_receive_loop, this);
+    video_thread_ = std::thread(&NativePlaybackSession::video_loop, this);
+
+    SB_LOG_I(kLogTag, "RTP video playback started local_port=%u %dx%d@%.2f",
+             local_port, width, height, rtp_video_frame_rate_);
+    return 0;
+}
 
 void NativePlaybackSession::stop() {
     // Idempotent guard: only one caller executes cleanup
@@ -111,6 +183,7 @@ void NativePlaybackSession::stop() {
     if (video_thread_.joinable()) video_thread_.join();
     if (audio_thread_.joinable()) audio_thread_.join();
 
+    if (rtp_video_receiver_) rtp_video_receiver_->close();
     if (video_worker_) video_worker_->close();
     if (audio_worker_) audio_worker_->close();
     clock_.reset();
@@ -200,6 +273,9 @@ void NativePlaybackSession::set_error(const std::string& msg) {
     abort_requested_ = true;
     video_packet_queue_.abort();
     audio_packet_queue_.abort();
+    if (rtp_video_receiver_) {
+        rtp_video_receiver_->interrupt();
+    }
     SB_LOG_E(kLogTag, "Error: %s", msg.c_str());
 }
 
@@ -207,6 +283,10 @@ void NativePlaybackSession::request_stop() {
     abort_requested_ = true;
     video_packet_queue_.abort();
     audio_packet_queue_.abort();
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (rtp_video_receiver_) {
+        rtp_video_receiver_->interrupt();
+    }
 }
 
 bool NativePlaybackSession::is_stopping() const {
@@ -279,6 +359,76 @@ void NativePlaybackSession::demux_loop() {
     }
 }
 
+// ============================================================
+// RTP video thread: UDP/RTP/H.264 -> compressed video queue
+// ============================================================
+
+void NativePlaybackSession::rtp_video_receive_loop() {
+    uint16_t local_port = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        local_port = rtp_local_port_;
+    }
+
+    auto receiver = std::make_unique<AndroidRtpUdpVideoReceiver>();
+    AndroidRtpUdpVideoReceiverConfig config;
+    config.local_port = local_port;
+    auto open_result = receiver->open(config);
+    if (open_result.is_err()) {
+        set_error("RTP video receiver open failed: " + open_result.error_message());
+        return;
+    }
+
+    AndroidRtpUdpVideoReceiver* receiver_ptr = receiver.get();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        rtp_video_receiver_ = std::move(receiver);
+        set_state_locked(streambridge::SessionState::Running);
+    }
+    clock_.start(streambridge::TimePointUs{0});
+    SB_LOG_I(kLogTag, "RTP video receiver listening on UDP port %u", receiver_ptr->local_port());
+
+    while (!is_stopping()) {
+        auto packet = receiver_ptr->read_frame();
+        if (packet.is_err()) {
+            if (!is_stopping()) {
+                set_error("RTP video receiver read failed: " + packet.error_message());
+            }
+            break;
+        }
+        if (first_video_pts_us_ < 0 && packet->has_valid_pts()) {
+            first_video_pts_us_ = packet->pts.us;
+        }
+        metrics_.on_packet_demuxed(*packet);
+        auto push_result = video_packet_queue_.push(
+            std::move(*packet),
+            streambridge::TimeDeltaUs::from_ms(2000));
+        if (push_result == streambridge::QueueResult::Aborted) {
+            break;
+        }
+        if (push_result == streambridge::QueueResult::Timeout) {
+            set_error("RTP video packet queue blocked");
+            break;
+        }
+    }
+
+    const auto stats = receiver_ptr->stats();
+    SB_LOG_I(kLogTag,
+             "RTP video receiver exiting udp=%llu malformed=%llu lost=%llu reordered=%llu dropped=%llu",
+             static_cast<unsigned long long>(stats.udp_datagrams),
+             static_cast<unsigned long long>(stats.malformed_datagrams),
+             static_cast<unsigned long long>(stats.depacketizer.lost_packets),
+             static_cast<unsigned long long>(stats.depacketizer.reordered_packets),
+             static_cast<unsigned long long>(stats.depacketizer.dropped_frames));
+
+    video_packet_queue_.abort();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (rtp_video_receiver_.get() == receiver_ptr) {
+            rtp_video_receiver_.reset();
+        }
+    }
+}
 // ============================================================
 // Video thread: H.264 decode + render
 // ============================================================

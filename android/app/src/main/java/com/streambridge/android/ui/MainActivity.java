@@ -33,6 +33,12 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private static final String DEFAULT_PLAY_URL = "rtmp://192.168.31.57:1935/live/test";
     private static final String DEFAULT_PUBLISH_URL =
             "rtmp://192.168.31.57:1935/live/android_camera";
+    private static final String DEFAULT_RTP_REMOTE_HOST = "192.168.31.57";
+    private static final int DEFAULT_RTP_REMOTE_PORT = 5004;
+    private static final int DEFAULT_RTP_LOCAL_PORT = 0;
+    private static final int DEFAULT_RTP_PLAY_WIDTH = 1280;
+    private static final int DEFAULT_RTP_PLAY_HEIGHT = 720;
+    private static final double DEFAULT_RTP_PLAY_FRAME_RATE = 30.0;
     private static final int REQUEST_PUBLISH_PERMISSIONS = 2001;
 
     private static final String[] STREAM_SOURCE_LABELS = {
@@ -63,6 +69,10 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private TextView metricsView;
     private Spinner streamSourceSpinner;
     private Spinner decodePathSpinner;
+    private Spinner publishTransportSpinner;
+    private EditText rtpRemoteHostInput;
+    private EditText rtpRemotePortInput;
+    private EditText rtpLocalPortInput;
     private Button startButton;
     private Button stopButton;
     private Button testPatternButton;
@@ -118,12 +128,12 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         root.addView(version, matchWrap());
 
         Button playbackPageButton = new Button(this);
-        playbackPageButton.setText("直播推流接收端");
+        playbackPageButton.setText("Playback Receiver");
         playbackPageButton.setOnClickListener(view -> showPlaybackPage());
         root.addView(playbackPageButton, matchWrap());
 
         Button publishPageButton = new Button(this);
-        publishPageButton.setText("Android采集推流端");
+        publishPageButton.setText("Android Publisher");
         publishPageButton.setOnClickListener(view -> showPublishPage());
         root.addView(publishPageButton, matchWrap());
 
@@ -183,23 +193,23 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
         LinearLayout row1 = horizontalRow();
         startButton = new Button(this);
-        startButton.setText("RTMP播放");
+        startButton.setText("Start Playback");
         startButton.setOnClickListener(view -> startPlayback());
         row1.addView(startButton, weightWrap());
 
         stopButton = new Button(this);
-        stopButton.setText("停止");
+        stopButton.setText("Stop");
         stopButton.setOnClickListener(view -> stopPlayback());
         row1.addView(stopButton, weightWrap());
 
         testPatternButton = new Button(this);
-        testPatternButton.setText("HTTP备用");
+        testPatternButton.setText("System Player");
         testPatternButton.setOnClickListener(view -> renderNativeTestPattern());
         row1.addView(testPatternButton, weightWrap());
         root.addView(row1, matchWrap());
 
         tcpTestButton = new Button(this);
-        tcpTestButton.setText("TCP测试");
+        tcpTestButton.setText("TCP Test");
         tcpTestButton.setOnClickListener(view -> testTcpFromInput());
         root.addView(tcpTestButton, matchWrap());
 
@@ -221,19 +231,45 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         applyPublishPreviewAspect();
         root.addView(publishPreviewView, matchWrap());
 
+        publishTransportSpinner = new Spinner(this);
+        ArrayAdapter<String> publishTransportAdapter = new ArrayAdapter<>(
+                this,
+                android.R.layout.simple_spinner_item,
+                new String[] {"RTMP/FLV", "RTP/UDP video"});
+        publishTransportAdapter.setDropDownViewResource(
+                android.R.layout.simple_spinner_dropdown_item);
+        publishTransportSpinner.setAdapter(publishTransportAdapter);
+        publishTransportSpinner.setSelection(0);
+        root.addView(publishTransportSpinner, matchWrap());
+
         urlInput = new EditText(this);
         urlInput.setSingleLine(true);
         urlInput.setText(DEFAULT_PUBLISH_URL);
         root.addView(urlInput, matchWrap());
 
+        rtpRemoteHostInput = new EditText(this);
+        rtpRemoteHostInput.setSingleLine(true);
+        rtpRemoteHostInput.setText(DEFAULT_RTP_REMOTE_HOST);
+        root.addView(rtpRemoteHostInput, matchWrap());
+
+        rtpRemotePortInput = new EditText(this);
+        rtpRemotePortInput.setSingleLine(true);
+        rtpRemotePortInput.setText(String.valueOf(DEFAULT_RTP_REMOTE_PORT));
+        root.addView(rtpRemotePortInput, matchWrap());
+
+        rtpLocalPortInput = new EditText(this);
+        rtpLocalPortInput.setSingleLine(true);
+        rtpLocalPortInput.setText(String.valueOf(DEFAULT_RTP_LOCAL_PORT));
+        root.addView(rtpLocalPortInput, matchWrap());
+
         LinearLayout row = horizontalRow();
         publishButton = new Button(this);
-        publishButton.setText("开始推流");
+        publishButton.setText("Start Publish");
         publishButton.setOnClickListener(view -> toggleCameraPublish());
         row.addView(publishButton, weightWrap());
 
         tcpTestButton = new Button(this);
-        tcpTestButton.setText("TCP测试");
+        tcpTestButton.setText("TCP Test");
         tcpTestButton.setOnClickListener(view -> testTcpFromInput());
         row.addView(tcpTestButton, weightWrap());
         root.addView(row, matchWrap());
@@ -251,6 +287,10 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         metricsView = null;
         streamSourceSpinner = null;
         decodePathSpinner = null;
+        publishTransportSpinner = null;
+        rtpRemoteHostInput = null;
+        rtpRemotePortInput = null;
+        rtpLocalPortInput = null;
         startButton = null;
         stopButton = null;
         testPatternButton = null;
@@ -282,7 +322,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
     private Button backButton() {
         Button button = new Button(this);
-        button.setText("返回主页");
+        button.setText("??????");
         button.setOnClickListener(view -> {
             stopAllSessions();
             showHomePage();
@@ -384,6 +424,27 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 onError("Native start failed: " + result + " " + nativeBridge.status());
                 setButtonsEnabled(true);
             }
+        } else if (isRtpUrl(url)) {
+            int localPort = rtpLocalPortFromUrl(url);
+            if (localPort <= 0) {
+                onError("RTP URL must include a UDP port, for example rtp://0.0.0.0:5004");
+                return;
+            }
+            setButtonsEnabled(false);
+            int result = nativeBridge.startRtpVideoReceive(
+                    localPort,
+                    playbackSurfaceView.getHolder().getSurface(),
+                    DEFAULT_RTP_PLAY_WIDTH,
+                    DEFAULT_RTP_PLAY_HEIGHT,
+                    DEFAULT_RTP_PLAY_FRAME_RATE,
+                    selectedDecodePath());
+            if (result == 0) {
+                onStatus("RTP video playback started: " + nativeBridge.status());
+                pollNativeStatus();
+            } else {
+                onError("RTP video start failed: " + result + " " + nativeBridge.status());
+                setButtonsEnabled(true);
+            }
         } else {
             setButtonsEnabled(false);
             mediaPlayerBackend.start(url);
@@ -421,25 +482,31 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         if (cameraPublisher != null && cameraPublisher.isRunning()) {
             cameraPublisher.stop();
             if (publishButton != null) {
-                publishButton.setText("开始推流");
+                publishButton.setText("Start Publish");
             }
             setButtonsEnabled(true);
             return;
         }
 
-        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED
-                || checkSelfPermission(Manifest.permission.RECORD_AUDIO)
-                != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[] {
-                            Manifest.permission.CAMERA,
-                            Manifest.permission.RECORD_AUDIO
-                    },
+        boolean rtpPublish = isRtpPublishSelected();
+        boolean cameraMissing = checkSelfPermission(Manifest.permission.CAMERA)
+                != PackageManager.PERMISSION_GRANTED;
+        boolean audioMissing = !rtpPublish
+                && checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED;
+        if (cameraMissing || audioMissing) {
+            requestPermissions(rtpPublish
+                            ? new String[] { Manifest.permission.CAMERA }
+                            : new String[] {
+                                    Manifest.permission.CAMERA,
+                                    Manifest.permission.RECORD_AUDIO
+                            },
                     REQUEST_PUBLISH_PERMISSIONS);
             return;
         }
 
         String url = currentUrl();
-        if (url.isEmpty()) {
+        if (!rtpPublish && url.isEmpty()) {
             onError("URL is empty");
             return;
         }
@@ -460,14 +527,28 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                         + " surfaceFrame=" + rectToString(surfaceFrame)
                         + " version=" + BuildInfo.VERSION);
 
-        bindActiveNetworkForRtmp();
+        if (!rtpPublish) {
+            bindActiveNetworkForRtmp();
+        }
         stopPlayback();
         setButtonsEnabled(false);
         if (publishButton != null) {
             publishButton.setEnabled(true);
-            publishButton.setText("停止推流");
+            publishButton.setText("Stop Publish");
         }
-        cameraPublisher.start(url, previewSurface);
+        if (rtpPublish) {
+            String host = currentRtpRemoteHost();
+            int remotePort = currentRtpRemotePort();
+            int localPort = currentRtpLocalPort();
+            if (host.isEmpty() || remotePort <= 0) {
+                onError("RTP host/port is invalid");
+                setButtonsEnabled(true);
+                return;
+            }
+            cameraPublisher.startRtp(host, remotePort, localPort, previewSurface);
+        } else {
+            cameraPublisher.start(url, previewSurface);
+        }
     }
 
     private void applyPublishPreviewAspect() {
@@ -611,7 +692,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 metricsView.setText("Publish: " + nativeBridge.publishStatus());
             }
             if (publishButton != null) {
-                publishButton.setText("开始推流");
+                publishButton.setText("Start Publish");
             }
             setButtonsEnabled(true);
             Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
@@ -636,6 +717,37 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         }
     }
 
+    private boolean isRtpPublishSelected() {
+        return publishTransportSpinner != null
+                && publishTransportSpinner.getSelectedItemPosition() == 1;
+    }
+
+    private String currentRtpRemoteHost() {
+        if (rtpRemoteHostInput == null) {
+            return "";
+        }
+        return rtpRemoteHostInput.getText().toString().trim();
+    }
+
+    private int currentRtpRemotePort() {
+        return parsePort(rtpRemotePortInput, DEFAULT_RTP_REMOTE_PORT);
+    }
+
+    private int currentRtpLocalPort() {
+        return parsePort(rtpLocalPortInput, DEFAULT_RTP_LOCAL_PORT);
+    }
+
+    private int parsePort(EditText input, int fallback) {
+        if (input == null) {
+            return fallback;
+        }
+        try {
+            return Integer.parseInt(input.getText().toString().trim());
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
     private String currentUrl() {
         if (urlInput == null) {
             return "";
@@ -650,6 +762,33 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         }
         urlInput.setText(replaceRtmpPath(currentUrl(), path));
         urlInput.setSelection(urlInput.getText().length());
+    }
+
+
+    private boolean isRtpUrl(String url) {
+        return url != null && url.trim().startsWith("rtp://");
+    }
+
+    private int rtpLocalPortFromUrl(String url) {
+        if (url == null) {
+            return -1;
+        }
+        String trimmed = url.trim();
+        if (!trimmed.startsWith("rtp://")) {
+            return -1;
+        }
+        int colon = trimmed.lastIndexOf(':');
+        if (colon < "rtp://".length() || colon + 1 >= trimmed.length()) {
+            return -1;
+        }
+        int slash = trimmed.indexOf('/', colon + 1);
+        String portText = slash >= 0 ? trimmed.substring(colon + 1, slash) : trimmed.substring(colon + 1);
+        try {
+            int port = Integer.parseInt(portText.trim());
+            return port > 0 && port <= 65535 ? port : -1;
+        } catch (NumberFormatException e) {
+            return -1;
+        }
     }
 
     private String selectedStreamPath() {

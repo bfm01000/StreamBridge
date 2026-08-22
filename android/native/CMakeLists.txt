@@ -5,8 +5,12 @@ project(streambridge_android LANGUAGES CXX)
 add_library(streambridge_android SHARED
     jni/streambridge_jni.cpp
     publish/native_audio_aac_encoder.cpp
+    publish/android_udp_sender.cpp
+    publish/android_rtp_udp_video_publisher.cpp
     publish/native_rtmp_publish_session.cpp
     playback/audio_decode_worker.cpp
+    playback/android_udp_receiver.cpp
+    playback/android_rtp_udp_video_receiver.cpp
     playback/demux_worker.cpp
     playback/hardware_buffer_frame.cpp
     playback/ffmpeg/ffmpeg_subscriber.cpp

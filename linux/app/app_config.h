@@ -12,7 +12,7 @@ enum class AppMode {
 
 struct AppConfig {
     AppMode mode = AppMode::Publisher;
-    std::string rtmp_url;
+    TransportConfig transport;
     std::string video_source;
     int video_width = 1280;
     int video_height = 720;
