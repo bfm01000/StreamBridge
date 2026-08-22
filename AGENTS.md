@@ -55,7 +55,7 @@ Camera
 
 ## 4. 单一事实来源
 
-`docs/AI_COLLABORATION.md` 仍作为项目阶段、决策和工作记录的事实来源，但其语义从“双 AI 协作记录”调整为“项目协作与决策日志”。
+`docs/项目协作与决策日志.md` 仍作为项目阶段、决策和工作记录的事实来源，但其语义从“双 AI 协作记录”调整为“项目协作与决策日志”。
 
 该文档至少维护：
 
@@ -71,7 +71,7 @@ Camera
 
 公共部分变更流程：
 
-1. 在工作说明或 `docs/AI_COLLABORATION.md` 中说明变更动机；
+1. 在工作说明或 `docs/项目协作与决策日志.md` 中说明变更动机；
 2. 写明对 Android / Linux / common 的影响；
 3. 小步修改；
 4. 编译或测试验证；
@@ -88,11 +88,11 @@ StreamBridge/
 ├── AI_START_PROMPT.md
 ├── README.md
 ├── docs/
-│   ├── AI_COLLABORATION.md
-│   ├── architecture.md
-│   ├── timestamp-and-av-sync.md
-│   ├── milestones.md
-│   ├── build-and-run.md
+│   ├── 项目协作与决策日志.md
+│   ├── 总体架构.md
+│   ├── 时间戳与音视频同步.md
+│   ├── 里程碑.md
+│   ├── 构建与运行.md
 │   ├── protocols-and-formats.md
 │   └── decisions/
 ├── common/

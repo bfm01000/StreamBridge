@@ -23,10 +23,10 @@ RTMP 服务端计划使用 SRS。第一版允许使用 FFmpeg 完成 RTMP/FLV �
 
 请至少生成：
 
-- `docs/architecture.md`
-- `docs/timestamp-and-av-sync.md`
-- `docs/milestones.md`
-- `docs/AI_COLLABORATION.md`
+- `docs/总体架构.md`
+- `docs/时间戳与音视频同步.md`
+- `docs/里程碑.md`
+- `docs/项目协作与决策日志.md`
 
 如确有必要，可以补充少量设计文档，但不要创建 `.cpp`、`.h`、Java 业务代码、Gradle 工程、CMake 实现或占位模块。Android 端禁止使用 Kotlin。
 
@@ -41,7 +41,7 @@ RTMP 服务端计划使用 SRS。第一版允许使用 FFmpeg 完成 RTMP/FLV �
 
 ### 单一事实来源
 
-`docs/AI_COLLABORATION.md` 是两个 AI 的唯一协作事实来源。任何跨端假设如果没有写入该文档，就视为不存在。
+`docs/项目协作与决策日志.md` 是两个 AI 的唯一协作事实来源。任何跨端假设如果没有写入该文档，就视为不存在。
 
 本轮创建该文档时，至少包含：
 
@@ -61,7 +61,7 @@ RTMP 服务端计划使用 SRS。第一版允许使用 FFmpeg 完成 RTMP/FLV �
 
 公共部分必须先设计和记录，再实现。修改顺序为：
 
-1. 在 `docs/AI_COLLABORATION.md` 的 Pending Changes 中提出变更；
+1. 在 `docs/项目协作与决策日志.md` 的 Pending Changes 中提出变更；
 2. 说明变更原因、影响 Android 哪些部分、影响 Linux 哪些部分；
 3. 等另一端确认，或至少明确记录“待另一端确认”；
 4. 再修改公共代码或公共文档；
@@ -107,7 +107,7 @@ Linux 端 AI 不应随意修改：
 - Android JNI 调用层；
 - 未经协作文档确认的公共协议、公共头文件和核心数据结构。
 
-如果某端发现必须修改另一端负责范围，先写入 `docs/AI_COLLABORATION.md` 的 Blockers 或 Pending Changes，不要直接改。
+如果某端发现必须修改另一端负责范围，先写入 `docs/项目协作与决策日志.md` 的 Blockers 或 Pending Changes，不要直接改。
 
 ## 架构文档必须回答的问题
 

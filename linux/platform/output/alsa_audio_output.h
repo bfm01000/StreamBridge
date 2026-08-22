@@ -2,7 +2,7 @@
 // ALSAAudioOutput — ALSA 播放（第一版 Linux 播放端音频输出）
 // 输入 S16 interleaved（FFmpegAudioDecoder 已转换为 S16），阻塞写入设备；
 // played_frames() 暴露「实际播放进度」（写入帧数 - 设备缓冲中未播帧数），
-// 供 MediaClock 音频主时钟使用（docs/architecture.md §305 要求）。
+// 供 MediaClock 音频主时钟使用（docs/总体架构.md §305 要求）。
 
 #include <cstdint>
 #include <string>

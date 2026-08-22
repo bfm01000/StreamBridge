@@ -646,5 +646,4 @@ AndroidCameraRtmpPublisher.stop()
 2. 将 Camera 输入进一步封装为 native/平台适配层，Java 只保留权限和生命周期。
 3. 让 Linux 推流端也接入 `PublishTimestampAligner`，统一推流端 AV 起点对齐。
 4. 将推流端指标展示到 UI：`audio_pts`、`video_pts`、`avDiffUs`、`alignDrop`、写包耗时、码率。
-5. 更新 [android-camera-publish-validation.md](android-camera-publish-validation.md)，让验证文档和 native 音频推流现状一致。
-
+5. 更新 [Android相机推流验证.md](Android相机推流验证.md)，让验证文档和 native 音频推流现状一致。

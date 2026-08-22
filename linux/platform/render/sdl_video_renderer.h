@@ -1,7 +1,7 @@
 #pragma once
 // SDL2 软件渲染器 — 第一版 Linux 播放端视频输出
 // YUV420P（CPU 帧）→ RGBA8888 → SDL 纹理 → 窗口（letterbox 等比居中）
-// 架构依据：docs/architecture.md — 反向链路第一版建议 SDL2，
+// 架构依据：docs/总体架构.md — 反向链路第一版建议 SDL2，
 // 便于窗口管理与软件渲染验证。
 
 #include <cstdint>

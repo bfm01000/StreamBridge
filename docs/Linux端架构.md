@@ -1,7 +1,7 @@
 # Linux 端详细架构设计
 
-> 依赖文档：`docs/common-interfaces.md`（所有接口、类型、时钟、同步定义在此）
-> 整体架构：`docs/architecture.md`
+> 依赖文档：`docs/公共接口.md`（所有接口、类型、时钟、同步定义在此）
+> 整体架构：`docs/总体架构.md`
 
 ---
 
@@ -479,8 +479,8 @@ SRS → RTMP Subscribe → FLV Demux → MediaPacket
 | `IAudioDecoder` | `FFmpegAudioDecoder` | FFmpeg AAC 软件解码 |
 | `IAudioOutput` | `ALSAAudioOutput` / `SDLAudioOutput` | ALSA 延迟更低，SDL2 更易用 |
 | `IVideoRenderer` | `SDLVideoRenderer` | SDL2 跨平台窗口+渲染，OpenGL/纹理 |
-| `IMediaClock` | `AudioMasterClock` | 音频主时钟，已在 common-interfaces.md 设计 |
-| `IAVSyncController` | `ThresholdAVSyncController` | 已在 common-interfaces.md 设计 |
+| `IMediaClock` | `AudioMasterClock` | 音频主时钟，已在 公共接口.md 设计 |
+| `IAVSyncController` | `ThresholdAVSyncController` | 已在 公共接口.md 设计 |
 
 ### 6.3 播放端线程模型
 
